@@ -138,7 +138,7 @@ export function CodeBlockComponent({
 
         {/* Code Content */}
         <pre className="flex-1 overflow-x-auto m-0 py-4 px-4 bg-transparent border-0 rounded-none shadow-none font-mono text-[13px] leading-6">
-          <NodeViewContent as={"code" as any} className="hljs block" />
+          <NodeViewContent<"code"> as="code" className="hljs block" />
         </pre>
       </div>
     </NodeViewWrapper>

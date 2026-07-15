@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -93,6 +93,85 @@ type SelectionRequestContext = {
   sources: SelectionSourceSegment[];
   result?: SelectionAiResult;
 };
+type RunnableEditorCommand = EditorCommand & { run(): void };
+
+const SLASH_COMMANDS: EditorCommand[] = [
+  {
+    key: "text",
+    label: "Văn bản",
+    hint: "Đoạn văn thường",
+    icon: <Plus className="size-4" />,
+  },
+  {
+    key: "h1",
+    label: "Tiêu đề 1",
+    hint: "Tiêu đề lớn",
+    icon: <Heading1 className="size-4" />,
+  },
+  {
+    key: "h2",
+    label: "Tiêu đề 2",
+    hint: "Tiêu đề vừa",
+    icon: <Heading2 className="size-4" />,
+  },
+  {
+    key: "bullet",
+    label: "Danh sách",
+    hint: "Bullet list",
+    icon: <List className="size-4" />,
+  },
+  {
+    key: "number",
+    label: "Danh sách số",
+    hint: "Numbered list",
+    icon: <ListOrdered className="size-4" />,
+  },
+  {
+    key: "task",
+    label: "Việc cần làm",
+    hint: "Task list",
+    icon: <ListChecks className="size-4" />,
+  },
+  {
+    key: "quote",
+    label: "Trích dẫn",
+    hint: "Quote block",
+    icon: <Quote className="size-4" />,
+  },
+  {
+    key: "code",
+    label: "Mã",
+    hint: "Code block",
+    icon: <Code className="size-4" />,
+  },
+  {
+    key: "divider",
+    label: "Đường phân cách",
+    hint: "Divider",
+    icon: <Minus className="size-4" />,
+  },
+  {
+    key: "review",
+    label: "AI Review",
+    hint: "Kiểm tra toàn bộ bài viết",
+    icon: <Sparkles className="size-4" />,
+  },
+  {
+    key: "practice",
+    label: "Luyện tập",
+    hint: "Ôn lỗi đã lưu",
+    icon: <ChevronRight className="size-4" />,
+  },
+];
+
+function filterSlashCommands<T extends EditorCommand>(
+  commands: T[],
+  query: string
+) {
+  return commands.filter((command) =>
+    `${command.key} ${command.label}`.toLowerCase().includes(query)
+  );
+}
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -168,6 +247,7 @@ export function WritingWorkspace({
   const saveChain = useRef<Promise<void>>(Promise.resolve());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slashRef = useRef(slash);
+  const slashCommandsRef = useRef<RunnableEditorCommand[]>([]);
   const executeRef = useRef<(index: number) => void>(() => undefined);
   const selectionAiRef = useRef(selectionAi);
   const selectionContextRef = useRef<SelectionRequestContext | null>(null);
@@ -272,7 +352,10 @@ export function WritingWorkspace({
       handleKeyDown: (_, event) => {
         const current = slashRef.current;
         if (!current.open) return false;
-        const count = filteredCommands(current.query).length;
+        const count = filterSlashCommands(
+          slashCommandsRef.current,
+          current.query
+        ).length;
         if (event.key === "ArrowDown") {
           event.preventDefault();
           setSlash((value) => ({
@@ -667,99 +750,31 @@ export function WritingWorkspace({
     }
   }, [editor, updateSelectionAi]);
 
-  const commands = useMemo<EditorCommand[]>(
-    () => [
-      {
-        key: "text",
-        label: "Văn bản",
-        hint: "Đoạn văn thường",
-        icon: <Plus className="size-4" />,
-        run: () => editor?.chain().focus().setParagraph().run(),
-      },
-      {
-        key: "h1",
-        label: "Tiêu đề 1",
-        hint: "Tiêu đề lớn",
-        icon: <Heading1 className="size-4" />,
-        run: () => editor?.chain().focus().toggleHeading({ level: 1 }).run(),
-      },
-      {
-        key: "h2",
-        label: "Tiêu đề 2",
-        hint: "Tiêu đề vừa",
-        icon: <Heading2 className="size-4" />,
-        run: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
-      },
-      {
-        key: "bullet",
-        label: "Danh sách",
-        hint: "Bullet list",
-        icon: <List className="size-4" />,
-        run: () => editor?.chain().focus().toggleBulletList().run(),
-      },
-      {
-        key: "number",
-        label: "Danh sách số",
-        hint: "Numbered list",
-        icon: <ListOrdered className="size-4" />,
-        run: () => editor?.chain().focus().toggleOrderedList().run(),
-      },
-      {
-        key: "task",
-        label: "Việc cần làm",
-        hint: "Task list",
-        icon: <ListChecks className="size-4" />,
-        run: () => editor?.chain().focus().toggleTaskList().run(),
-      },
-      {
-        key: "quote",
-        label: "Trích dẫn",
-        hint: "Quote block",
-        icon: <Quote className="size-4" />,
-        run: () => editor?.chain().focus().toggleBlockquote().run(),
-      },
-      {
-        key: "code",
-        label: "Mã",
-        hint: "Code block",
-        icon: <Code className="size-4" />,
-        run: () => editor?.chain().focus().toggleCodeBlock().run(),
-      },
-      {
-        key: "divider",
-        label: "Đường phân cách",
-        hint: "Divider",
-        icon: <Minus className="size-4" />,
-        run: () => editor?.chain().focus().setHorizontalRule().run(),
-      },
-      {
-        key: "review",
-        label: "AI Review",
-        hint: "Kiểm tra toàn bộ bài viết",
-        icon: <Sparkles className="size-4" />,
-        run: () => review(),
-      },
-      {
-        key: "practice",
-        label: "Luyện tập",
-        hint: "Ôn lỗi đã lưu",
-        icon: <ChevronRight className="size-4" />,
-        run: () => setView("practice"),
-      },
-    ],
-    [editor, review]
-  );
-  const filteredCommands = useCallback(
-    (query: string) =>
-      commands.filter((command) =>
-        `${command.key} ${command.label}`.toLowerCase().includes(query)
-      ),
-    [commands]
-  );
+  const commandRunners: Record<string, () => void> = {
+    text: () => editor?.chain().focus().setParagraph().run(),
+    h1: () => editor?.chain().focus().toggleHeading({ level: 1 }).run(),
+    h2: () => editor?.chain().focus().toggleHeading({ level: 2 }).run(),
+    bullet: () => editor?.chain().focus().toggleBulletList().run(),
+    number: () => editor?.chain().focus().toggleOrderedList().run(),
+    task: () => editor?.chain().focus().toggleTaskList().run(),
+    quote: () => editor?.chain().focus().toggleBlockquote().run(),
+    code: () => editor?.chain().focus().toggleCodeBlock().run(),
+    divider: () => editor?.chain().focus().setHorizontalRule().run(),
+    review,
+    practice: () => setView("practice"),
+  };
+  const commands: RunnableEditorCommand[] = SLASH_COMMANDS.map((command) => ({
+    ...command,
+    run: commandRunners[command.key],
+  }));
+  const visibleSlashCommands = filterSlashCommands(SLASH_COMMANDS, slash.query);
+  useEffect(() => {
+    slashCommandsRef.current = commands;
+  }, [commands]);
   const chooseSlashCommand = useCallback(
     (index: number) => {
       if (!editor) return;
-      const command = filteredCommands(slash.query)[index];
+      const command = filterSlashCommands(commands, slash.query)[index];
       if (!command) return;
       const cursor = editor.state.selection.from;
       editor
@@ -770,7 +785,7 @@ export function WritingWorkspace({
       setSlash((value) => ({ ...value, open: false }));
       command.run();
     },
-    [editor, filteredCommands, slash.query]
+    [commands, editor, slash.query]
   );
   useEffect(() => {
     executeRef.current = chooseSlashCommand;
@@ -1040,13 +1055,11 @@ export function WritingWorkspace({
               onTransform={applyTransform}
               onCloseTransform={() => setTransform(null)}
             />
-            {/* Callbacks intentionally dereference the live editor only after a user event. */}
-            {/* eslint-disable-next-line react-hooks/refs */}
             {slash.open && (
               <SlashCommandMenu
                 x={slash.x}
                 y={slash.y}
-                commands={filteredCommands(slash.query)}
+                commands={visibleSlashCommands}
                 selected={slash.selected}
                 onChoose={chooseSlashCommand}
               />

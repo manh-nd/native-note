@@ -6,9 +6,9 @@
 
 **Status:** ready-for-agent
 
-- [ ] Generated development and test artifacts are excluded from lint without hiding repository source.
-- [ ] All current source-level lint violations are resolved.
-- [ ] Typecheck, unit tests, lint, package-boundary checks, and production build pass from a clean checkout.
-- [ ] The domain glossary defines Page, StoredDocument, Review, Finding, DocumentProposal, LearningItem, Skill, Instructions, Agent, AgentRun, and ToolCall.
-- [ ] The glossary explicitly avoids using Correction as a synonym for Finding or DocumentProposal.
-- [ ] Architectural decisions record single-user JSON snapshot persistence, server-canonical proposal application, and Tiptap as the document-editor implementation.
+- [x] Generated development and test artifacts are excluded from lint without hiding repository source.
+- [x] All current source-level lint violations are resolved.
+- [x] Typecheck, unit tests, lint, package-boundary checks, and production build pass from a clean checkout.
+- [x] The domain glossary defines Page, StoredDocument, Review, Finding, DocumentProposal, LearningItem, Skill, Instructions, Agent, AgentRun, and ToolCall.
+- [x] The glossary explicitly avoids using Correction as a synonym for Finding or DocumentProposal.
+- [x] Architectural decisions record single-user JSON snapshot persistence, server-canonical proposal application, and Tiptap as the document-editor implementation.
