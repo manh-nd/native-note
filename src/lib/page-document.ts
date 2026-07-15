@@ -1,9 +1,20 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { pages } from "@/db/schema";
 import { migrateStoredDocument } from "@/packages/documents";
 
 type PageRow = typeof pages.$inferSelect;
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
 
 export async function migratePageStoredDocument(
   page: PageRow
@@ -13,7 +24,7 @@ export async function migratePageStoredDocument(
     content: page.content,
   });
   const contentChanged =
-    JSON.stringify(page.content) !== JSON.stringify(storedDocument.content);
+    stableJson(page.content) !== stableJson(storedDocument.content);
   const needsPersistence =
     page.documentSchemaVersion !== storedDocument.schemaVersion ||
     page.plainText !== storedDocument.plainText ||
@@ -26,12 +37,15 @@ export async function migratePageStoredDocument(
       content: storedDocument.content,
       documentSchemaVersion: storedDocument.schemaVersion,
       plainText: storedDocument.plainText,
+      contentRevision: sql`${pages.contentRevision} + 1`,
+      version: sql`${pages.version} + 1`,
       updatedAt: new Date(),
     })
     .where(
       and(
         eq(pages.id, page.id),
-        eq(pages.documentSchemaVersion, page.documentSchemaVersion)
+        eq(pages.documentSchemaVersion, page.documentSchemaVersion),
+        eq(pages.contentRevision, page.contentRevision)
       )
     )
     .returning();

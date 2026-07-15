@@ -15,6 +15,8 @@ function page(id: string, parentId: string | null, position: number): PageRow {
     documentSchemaVersion: 1,
     plainText: "",
     position,
+    contentRevision: 1,
+    metadataRevision: 1,
     version: 1,
     createdAt: date,
     updatedAt: date,

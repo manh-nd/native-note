@@ -7,13 +7,56 @@ import { ApiError, apiError, parseJson, requireUserId } from "@/lib/api";
 import { ownedPage } from "@/lib/ownership";
 import { createStoredDocument } from "@/packages/documents";
 
-const updateSchema = z.object({
+const mutationFields = {
   title: z.string().trim().min(1).max(120).optional(),
   content: z.unknown().optional(),
-  version: z.number().int().positive(),
   parentId: z.string().uuid().nullable().optional(),
   position: z.number().int().min(0).optional(),
-});
+};
+
+const contentUpdateSchema = z
+  .object({
+    title: z.never().optional(),
+    content: z.unknown(),
+    parentId: z.never().optional(),
+    position: z.never().optional(),
+    contentRevision: z.number().int().positive(),
+    metadataRevision: z.never().optional(),
+    version: z.never().optional(),
+  })
+  .strict()
+  .refine((input) => input.content !== undefined);
+
+const metadataUpdateSchema = z
+  .object({
+    ...mutationFields,
+    content: z.never().optional(),
+    metadataRevision: z.number().int().positive(),
+    contentRevision: z.never().optional(),
+    version: z.never().optional(),
+  })
+  .strict()
+  .refine(
+    (input) =>
+      input.title !== undefined ||
+      input.parentId !== undefined ||
+      input.position !== undefined
+  );
+
+const legacyUpdateSchema = z
+  .object({
+    ...mutationFields,
+    version: z.number().int().positive(),
+    contentRevision: z.never().optional(),
+    metadataRevision: z.never().optional(),
+  })
+  .strict();
+
+const updateSchema = z.union([
+  contentUpdateSchema,
+  metadataUpdateSchema,
+  legacyUpdateSchema,
+]);
 
 export async function PATCH(
   request: Request,
@@ -24,6 +67,21 @@ export async function PATCH(
     const { id } = await params;
     const current = await ownedPage(userId, id);
     const input = await parseJson(request, updateSchema);
+    const revisionStrategy =
+      input.contentRevision !== undefined
+        ? {
+            condition: eq(pages.contentRevision, input.contentRevision),
+            conflictCode: "CONTENT_REVISION_CONFLICT",
+          }
+        : input.metadataRevision !== undefined
+          ? {
+              condition: eq(pages.metadataRevision, input.metadataRevision),
+              conflictCode: "METADATA_REVISION_CONFLICT",
+            }
+          : {
+              condition: eq(pages.version, input.version!),
+              conflictCode: "VERSION_CONFLICT",
+            };
     const storedDocument =
       input.content === undefined
         ? undefined
@@ -47,6 +105,11 @@ export async function PATCH(
         cursor = tree.find((node) => node.id === cursor)?.parentId ?? null;
       }
     }
+    const changesContent = storedDocument !== undefined;
+    const changesMetadata =
+      input.title !== undefined ||
+      input.parentId !== undefined ||
+      input.position !== undefined;
     const [updated] = await db
       .update(pages)
       .set({
@@ -60,17 +123,24 @@ export async function PATCH(
           : {}),
         ...(input.parentId !== undefined ? { parentId: input.parentId } : {}),
         ...(input.position !== undefined ? { position: input.position } : {}),
+        ...(changesContent
+          ? { contentRevision: sql`${pages.contentRevision} + 1` }
+          : {}),
+        ...(changesMetadata
+          ? { metadataRevision: sql`${pages.metadataRevision} + 1` }
+          : {}),
         version: sql`${pages.version} + 1`,
         updatedAt: new Date(),
       })
-      .where(and(eq(pages.id, current.id), eq(pages.version, input.version)))
+      .where(and(eq(pages.id, current.id), revisionStrategy.condition))
       .returning();
-    if (!updated)
+    if (!updated) {
       throw new ApiError(
         409,
         "Trang đã được cập nhật ở nơi khác. Hãy tải lại trước khi lưu.",
-        "VERSION_CONFLICT"
+        revisionStrategy.conflictCode
       );
+    }
     return NextResponse.json({ page: updated });
   } catch (error) {
     return apiError(error);

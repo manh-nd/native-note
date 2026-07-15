@@ -15,6 +15,13 @@
       "when": 1784126183879,
       "tag": "0001_lyrical_nekra",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784127306751,
+      "tag": "0002_talented_stone_men",
+      "breakpoints": true
     }
   ]
 }

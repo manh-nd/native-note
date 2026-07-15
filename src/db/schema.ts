@@ -124,6 +124,8 @@ export const pages = pgTable(
       .default(1),
     plainText: text("plain_text").notNull().default(""),
     position: integer("position").notNull().default(0),
+    contentRevision: integer("content_revision").notNull().default(1),
+    metadataRevision: integer("metadata_revision").notNull().default(1),
     version: integer("version").notNull().default(1),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
