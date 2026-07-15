@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import type { Editor, JSONContent } from "@tiptap/core";
+import type { DocumentOperationBatch } from "@/packages/document-editor";
 import type { pages } from "@/db/schema";
 import { Toaster } from "@/components/ui/sonner";
 import {
@@ -59,6 +60,7 @@ import {
   selectionIsCurrent,
   selectionSegments,
   selectionSnapshot,
+  selectionAiResultsFromOperations,
   showSelectionAiPreview,
   preservedEditorSelection,
   type SelectionAiResult,
@@ -244,6 +246,7 @@ export function WritingWorkspace({
   const selectionAiRef = useRef(selectionAi);
   const selectionContextRef = useRef<SelectionRequestContext | null>(null);
   const selectionAbortRef = useRef<AbortController | null>(null);
+  const ignoreCanonicalEditorUpdate = useRef(false);
   const lastTextSelectionRef = useRef<{ from: number; to: number } | null>(
     null
   );
@@ -416,6 +419,10 @@ export function WritingWorkspace({
 
   const handleEditorUpdate = useCallback(
     (current: Editor) => {
+      if (ignoreCanonicalEditorUpdate.current) {
+        ignoreCanonicalEditorUpdate.current = false;
+        return;
+      }
       if (
         selectionContextRef.current &&
         selectionAiRef.current.mode !== "idle"
@@ -674,6 +681,8 @@ export function WritingWorkspace({
               text: segment.text,
               nodeType: segment.nodeType,
               blockId: segment.blockId,
+              blockFrom: segment.blockFrom,
+              blockTo: segment.blockTo,
             })),
           }),
         });
@@ -707,7 +716,11 @@ export function WritingWorkspace({
             summary: result.summaryVi || "Đoạn này đã ổn.",
           });
         else {
-          showSelectionAiPreview(editor, sources, result.segments);
+          showSelectionAiPreview(
+            editor,
+            sources,
+            selectionAiResultsFromOperations(sources, result.operations)
+          );
           updateSelectionAi({ mode: "preview", summary: result.summaryVi });
         }
       } catch (cause) {
@@ -731,11 +744,14 @@ export function WritingWorkspace({
     selectionContextRef.current = null;
     if (editor) clearSelectionAiPreview(editor);
     updateSelectionAi({ mode: "idle" });
-    if (context?.result?.reviewId) {
+    if (context?.result?.proposalId) {
       try {
-        await api(`/api/ai/transform/${context.result.reviewId}/dismiss`, {
-          method: "POST",
-        });
+        await api(
+          `/api/document-proposals/${context.result.proposalId}/reject`,
+          {
+            method: "POST",
+          }
+        );
       } catch (cause) {
         setError(
           cause instanceof Error ? cause.message : "Không thể bỏ kết quả AI."
@@ -758,27 +774,49 @@ export function WritingWorkspace({
       return;
     }
     try {
-      await api(`/api/ai/transform/${context.result.reviewId}/accept`, {
+      editor.setEditable(false);
+      const accepted = await api<{
+        page?: PageRow;
+        proposal?: { operations: DocumentOperationBatch };
+      }>(`/api/document-proposals/${context.result.proposalId}/accept`, {
         method: "POST",
       });
       selectionContextRef.current = null;
       updateSelectionAi({ mode: "idle" });
-      if (
-        !applySelectionAiResult(
-          editor,
-          context.sources,
-          context.result.segments
+      try {
+        ignoreCanonicalEditorUpdate.current = true;
+        if (
+          !applySelectionAiResult(
+            editor,
+            context.sources,
+            selectionAiResultsFromOperations(
+              context.sources,
+              accepted.proposal?.operations ?? context.result.operations
+            ),
+            "server-canonical-proposal"
+          )
         )
-      )
-        updateSelectionAi({ mode: "stale" });
-      else editor.commands.focus();
+          throw new Error("Canonical operation no longer matches the editor.");
+        if (accepted.page) updatePage(accepted.page, "full");
+        editor.commands.focus();
+      } catch {
+        if (accepted.page) {
+          editor.commands.setContent(accepted.page.content as JSONContent, {
+            emitUpdate: false,
+          });
+          updatePage(accepted.page, "full");
+          setError("Đã tải lại nội dung canonical từ máy chủ.");
+        } else updateSelectionAi({ mode: "stale" });
+      }
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Không thể áp dụng kết quả AI."
       );
       updateSelectionAi({ mode: "stale" });
+    } finally {
+      editor.setEditable(true);
     }
-  }, [editor, updateSelectionAi]);
+  }, [editor, updatePage, updateSelectionAi]);
 
   const commandRunners: Record<string, () => void> = {
     text: () => editor?.chain().focus().setParagraph().run(),

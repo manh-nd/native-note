@@ -13,6 +13,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type { DocumentContent } from "@/packages/documents";
+import type { DocumentOperationBatch } from "@/packages/document-editor";
 
 export const findingCategory = pgEnum("finding_category", [
   "grammar",
@@ -40,6 +41,14 @@ export const practiceVerdict = pgEnum("practice_verdict", [
   "incorrect",
 ]);
 export const sessionKind = pgEnum("practice_kind", ["writing", "live"]);
+export const aiRunSourceKind = pgEnum("ai_run_source_kind", ["selection"]);
+export const aiRunStatus = pgEnum("ai_run_status", ["completed", "failed"]);
+export const documentProposalStatus = pgEnum("document_proposal_status", [
+  "pending",
+  "accepted",
+  "rejected",
+  "stale",
+]);
 
 export const users = pgTable("users", {
   id: text("id")
@@ -159,6 +168,55 @@ export const reviews = pgTable("reviews", {
     .notNull(),
 });
 
+export const aiRuns = pgTable("ai_runs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  pageId: uuid("page_id")
+    .notNull()
+    .references(() => pages.id, { onDelete: "cascade" }),
+  creatorId: text("creator_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  sourceKind: aiRunSourceKind("source_kind").notNull(),
+  action: text("action").notNull(),
+  model: text("model").notNull(),
+  status: aiRunStatus("status").notNull(),
+  inputSnapshot: text("input_snapshot").notNull(),
+  outputSnapshot: jsonb("output_snapshot").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+export const documentProposals = pgTable(
+  "document_proposals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    pageId: uuid("page_id")
+      .notNull()
+      .references(() => pages.id, { onDelete: "cascade" }),
+    sourceRunId: uuid("source_run_id")
+      .notNull()
+      .references(() => aiRuns.id, { onDelete: "cascade" }),
+    creatorId: text("creator_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    baseContentRevision: integer("base_content_revision").notNull(),
+    operations: jsonb("operations").$type<DocumentOperationBatch>().notNull(),
+    summaryVi: text("summary_vi").notNull(),
+    status: documentProposalStatus("status").notNull().default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("document_proposals_page_status_idx").on(table.pageId, table.status),
+  ]
+);
+
 export const findings = pgTable("findings", {
   id: uuid("id").defaultRandom().primaryKey(),
   reviewId: uuid("review_id")
@@ -262,6 +320,8 @@ export const pageRelations = relations(pages, ({ one, many }) => ({
     references: [workspaces.id],
   }),
   reviews: many(reviews),
+  aiRuns: many(aiRuns),
+  documentProposals: many(documentProposals),
 }));
 
 export const pageSearchIndex = sql`to_tsvector('english', ${pages.plainText})`;

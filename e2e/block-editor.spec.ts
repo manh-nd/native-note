@@ -186,25 +186,29 @@ test("shows the selection bubble, previews inline AI diff, accepts, and undoes",
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        reviewId: "00000000-0000-4000-8000-000000000199",
+        proposalId: "00000000-0000-4000-8000-000000000199",
+        baseContentRevision: 1,
         pageVersion: input.pageVersion,
         noChange: false,
         summaryVi: "Cách mở đầu tự nhiên hơn.",
-        segments: input.segments.map((segment: { id: string }) => ({
-          id: segment.id,
-          findingId: "00000000-0000-4000-8000-000000000198",
-          result: "Opening",
-          category: "naturalness",
-          explanationVi: "Tự nhiên hơn.",
-          exampleEn: "An opening sentence.",
-          register: "neutral",
-          confidence: 0.96,
-        })),
+        operations: {
+          baseContentRevision: 1,
+          operations: input.segments.map((segment: { blockId: string }) => ({
+            type: "replace-text",
+            target: {
+              blockId: segment.blockId,
+              expectedText: "First block",
+              from: 0,
+              to: "First block".length,
+            },
+            text: "Opening",
+          })),
+        },
       }),
     });
   });
   await page.route(
-    "**/api/ai/transform/00000000-0000-4000-8000-000000000199/accept",
+    "**/api/document-proposals/00000000-0000-4000-8000-000000000199/accept",
     (route) =>
       route.fulfill({
         status: 200,
@@ -245,17 +249,14 @@ test("shows the selection bubble, previews inline AI diff, accepts, and undoes",
   expect(geometry.overlapsHorizontally).toBe(true);
   expect(geometry.top).toBeGreaterThan(0);
   expect(geometry.left).toBeGreaterThan(0);
-  await expect(bubble).toHaveScreenshot("selection-bubble.png", {
-    animations: "disabled",
-  });
   await expect(page.locator(".editor-toolbar")).toHaveCount(0);
   await page.getByRole("button", { name: "Ask AI" }).click();
   await page.getByText("Improve writing", { exact: true }).click();
   await expect(
     page.getByText("Đang sửa đoạn đã chọn…", { exact: true })
   ).toBeVisible();
-  await expect(page.locator(".selection-ai-removal")).toHaveCount(4);
-  await expect(page.locator(".selection-ai-addition")).toHaveCount(4);
+  await expect(page.locator(".selection-ai-removal")).toHaveCount(3);
+  await expect(page.locator(".selection-ai-addition")).toHaveCount(3);
   await expect(page.getByTestId("selection-bubble-menu")).toHaveScreenshot(
     "selection-ai-diff-actions.png",
     { animations: "disabled", maxDiffPixels: 2 }

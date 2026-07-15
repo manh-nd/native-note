@@ -309,10 +309,11 @@ export function applyDocumentOperations({
   return applicationFromDocument(transaction.doc);
 }
 
-function applyDocumentOperationsToEditor(
+export function applyDocumentOperationsToEditor(
   editor: Editor,
   batch: DocumentOperationBatch,
-  contentRevision: number
+  contentRevision: number,
+  origin?: string
 ): AppliedDocumentOperations {
   const transaction = applyToTransaction(
     editor.state.tr,
@@ -320,6 +321,7 @@ function applyDocumentOperationsToEditor(
     contentRevision
   );
   const result = applicationFromDocument(transaction.doc);
+  if (origin) transaction.setMeta("documentOperationOrigin", origin);
   editor.view.dispatch(transaction.scrollIntoView());
   return result;
 }

@@ -8,6 +8,7 @@ export {
 } from "./lib/schema";
 export {
   applyDocumentOperations,
+  applyDocumentOperationsToEditor,
   createDocumentEditorSession,
   createPortableExcerpt,
   DocumentOperationError,

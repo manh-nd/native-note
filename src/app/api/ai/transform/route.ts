@@ -1,7 +1,5 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/db";
-import { findings, reviews } from "@/db/schema";
 import { ApiError, apiError, parseJson, requireUserId } from "@/lib/api";
 import { generateStructured, getTextModel } from "@/lib/ai/gemini";
 import {
@@ -11,6 +9,7 @@ import {
 } from "@/lib/ai/schemas";
 import { ownedPage } from "@/lib/ownership";
 import { rateLimit } from "@/lib/rate-limit";
+import { createSelectionDocumentProposal } from "@/packages/document-proposals";
 
 const actionSchema = z.enum([
   "improve",
@@ -43,7 +42,9 @@ const selectionSegmentSchema = z.object({
     .max(5000)
     .refine((value) => !/[\r\n]/.test(value)),
   nodeType: z.string().min(1).max(40),
-  blockId: z.string().uuid().optional(),
+  blockId: z.string().uuid(),
+  blockFrom: z.number().int().nonnegative(),
+  blockTo: z.number().int().positive(),
 });
 
 const selectionSchema = z
@@ -186,60 +187,31 @@ export async function POST(request: Request) {
     const outputById = new Map(
       output.segments.map((segment) => [segment.id, segment])
     );
-    const changed = input.segments.filter(
-      (segment) => outputById.get(segment.id)?.result !== segment.text
-    );
-    const stored = await db.transaction(async (tx) => {
-      const [review] = await tx
-        .insert(reviews)
-        .values({
-          pageId: page.id,
-          pageVersion: page.version,
-          scopeFrom: first.from,
-          scopeTo: last.to,
-          snapshot: input.snapshot,
-          model: getTextModel(),
-        })
-        .returning();
-      const savedFindings = changed.length
-        ? await tx
-            .insert(findings)
-            .values(
-              changed.map((source) => {
-                const result = outputById.get(source.id)!;
-                return {
-                  reviewId: review.id,
-                  category: result.category,
-                  original: source.text,
-                  suggestion: result.result,
-                  explanationVi: result.explanationVi,
-                  exampleEn: result.exampleEn,
-                  register: result.register,
-                  confidence: result.confidence,
-                  from: source.from,
-                  to: source.to,
-                };
-              })
-            )
-            .returning()
-        : [];
-      return { review, savedFindings };
-    });
-    const findingIds = new Map(
-      changed.map((source, index) => [
-        source.id,
-        stored.savedFindings[index]?.id,
-      ])
-    );
-    return NextResponse.json({
-      reviewId: stored.review.id,
-      pageVersion: page.version,
-      noChange: changed.length === 0,
+    const proposal = await createSelectionDocumentProposal({
+      page,
+      userId,
+      action: input.action,
+      snapshot: input.snapshot,
+      model: getTextModel(),
       summaryVi: output.summaryVi,
       segments: input.segments.map((source) => ({
-        ...outputById.get(source.id)!,
-        findingId: findingIds.get(source.id),
+        blockId: source.blockId,
+        blockFrom: source.blockFrom,
+        blockTo: source.blockTo,
+        text: source.text,
+        result: outputById.get(source.id)!.result,
       })),
+    });
+    return NextResponse.json({
+      proposalId: proposal?.id,
+      baseContentRevision: page.contentRevision,
+      pageVersion: page.version,
+      noChange: !proposal,
+      summaryVi: output.summaryVi,
+      operations: proposal?.operations ?? {
+        baseContentRevision: page.contentRevision,
+        operations: [],
+      },
     });
   } catch (error) {
     return apiError(error);

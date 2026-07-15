@@ -5,11 +5,15 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { Extension } from "@tiptap/core";
 import { diffWordsWithSpace } from "diff";
 import { BLOCK_ID_ATTRIBUTE } from "./extensions";
+import type { DocumentOperationBatch } from "@/packages/document-editor";
 
 export const selectionWordDiff = diffWordsWithSpace;
 const preservedSelections = new WeakMap<Editor, { from: number; to: number }>();
 
-export function rememberEditorSelection(editor: Editor, range: { from: number; to: number }) {
+export function rememberEditorSelection(
+  editor: Editor,
+  range: { from: number; to: number }
+) {
   preservedSelections.set(editor, range);
 }
 
@@ -29,13 +33,22 @@ export type PlainTextBlock = {
 
 export type SelectionSourceSegment = PlainTextBlock & {
   id: string;
+  blockId: string;
+  blockFrom: number;
+  blockTo: number;
 };
 
 export type SelectionAiSegment = {
   id: string;
   findingId?: string;
   result: string;
-  category: "grammar" | "word_choice" | "collocation" | "naturalness" | "register" | "clarity";
+  category:
+    | "grammar"
+    | "word_choice"
+    | "collocation"
+    | "naturalness"
+    | "register"
+    | "clarity";
   explanationVi: string;
   exampleEn: string;
   register: string;
@@ -43,11 +56,12 @@ export type SelectionAiSegment = {
 };
 
 export type SelectionAiResult = {
-  reviewId: string;
+  proposalId?: string;
+  baseContentRevision: number;
   pageVersion: number;
   noChange: boolean;
   summaryVi: string;
-  segments: SelectionAiSegment[];
+  operations: DocumentOperationBatch;
 };
 
 function textOf(node: ProseMirrorNode, from = 0, to = node.content.size) {
@@ -79,16 +93,22 @@ export function buildPlainTextIndex(doc: ProseMirrorNode) {
   return { text, blocks };
 }
 
-export function selectionSnapshot(segments: Pick<SelectionSourceSegment, "text">[]) {
+export function selectionSnapshot(
+  segments: Pick<SelectionSourceSegment, "text">[]
+) {
   return segments.map((segment) => segment.text).join("\n");
 }
 
-export function selectionSegments(editor: Editor, range?: { from: number; to: number }): SelectionSourceSegment[] {
+export function selectionSegments(
+  editor: Editor,
+  range?: { from: number; to: number }
+): SelectionSourceSegment[] {
   const from = range?.from ?? editor.state.selection.from;
   const to = range?.to ?? editor.state.selection.to;
   if (from === to) return [];
   const index = buildPlainTextIndex(editor.state.doc);
   return index.blocks.flatMap((block, blockIndex) => {
+    if (!block.blockId) return [];
     const pmFrom = Math.max(from, block.pmFrom);
     const pmTo = Math.min(to, block.pmTo);
     if (pmFrom >= pmTo) return [];
@@ -98,15 +118,20 @@ export function selectionSegments(editor: Editor, range?: { from: number; to: nu
     const selected = textOf(node, pmFrom - block.pmFrom, pmTo - block.pmFrom);
     if (!selected) return [];
     const plainFrom = block.plainFrom + before.length;
-    return [{
-      ...block,
-      id: `segment-${blockIndex}-${plainFrom}-${plainFrom + selected.length}`,
-      pmFrom,
-      pmTo,
-      plainFrom,
-      plainTo: plainFrom + selected.length,
-      text: selected,
-    }];
+    return [
+      {
+        ...block,
+        blockId: block.blockId,
+        id: `segment-${blockIndex}-${plainFrom}-${plainFrom + selected.length}`,
+        pmFrom,
+        pmTo,
+        plainFrom,
+        plainTo: plainFrom + selected.length,
+        text: selected,
+        blockFrom: pmFrom - block.pmFrom,
+        blockTo: pmTo - block.pmFrom,
+      },
+    ];
   });
 }
 
@@ -115,18 +140,21 @@ const previewKey = new PluginKey<DecorationSet>("selectionAiPreview");
 export const SelectionAiPreview = Extension.create({
   name: "selectionAiPreview",
   addProseMirrorPlugins() {
-    return [new Plugin<DecorationSet>({
-      key: previewKey,
-      state: {
-        init: () => DecorationSet.empty,
-        apply: (tr, current) => {
-          const next = tr.getMeta(previewKey) as DecorationSet | "clear" | undefined;
-          if (next === "clear" || tr.docChanged) return DecorationSet.empty;
-          return next ?? current.map(tr.mapping, tr.doc);
+    return [
+      new Plugin<DecorationSet>({
+        key: previewKey,
+        state: {
+          init: () => DecorationSet.empty,
+          apply: (tr, current) => {
+            const next = tr.getMeta(previewKey) as
+              DecorationSet | "clear" | undefined;
+            if (next === "clear" || tr.docChanged) return DecorationSet.empty;
+            return next ?? current.map(tr.mapping, tr.doc);
+          },
         },
-      },
-      props: { decorations: (state) => previewKey.getState(state) },
-    })];
+        props: { decorations: (state) => previewKey.getState(state) },
+      }),
+    ];
   },
 });
 
@@ -134,7 +162,11 @@ export function clearSelectionAiPreview(editor: Editor) {
   editor.view.dispatch(editor.state.tr.setMeta(previewKey, "clear"));
 }
 
-export function showSelectionAiPreview(editor: Editor, sources: SelectionSourceSegment[], results: SelectionAiSegment[]) {
+export function showSelectionAiPreview(
+  editor: Editor,
+  sources: SelectionSourceSegment[],
+  results: SelectionAiSegment[]
+) {
   const byId = new Map(results.map((result) => [result.id, result]));
   const decorations: Decoration[] = [];
   for (const source of sources) {
@@ -143,27 +175,85 @@ export function showSelectionAiPreview(editor: Editor, sources: SelectionSourceS
     let cursor = source.pmFrom;
     for (const part of selectionWordDiff(source.text, result.result)) {
       if (part.added) {
-        decorations.push(Decoration.widget(cursor, () => {
-          const span = document.createElement("span");
-          span.className = "selection-ai-addition";
-          span.textContent = part.value;
-          return span;
-        }, { side: 1 }));
+        decorations.push(
+          Decoration.widget(
+            cursor,
+            () => {
+              const span = document.createElement("span");
+              span.className = "selection-ai-addition";
+              span.textContent = part.value;
+              return span;
+            },
+            { side: 1 }
+          )
+        );
       } else {
         const end = cursor + part.value.length;
-        if (part.removed) decorations.push(Decoration.inline(cursor, end, { class: "selection-ai-removal" }));
+        if (part.removed)
+          decorations.push(
+            Decoration.inline(cursor, end, { class: "selection-ai-removal" })
+          );
         cursor = end;
       }
     }
   }
-  editor.view.dispatch(editor.state.tr.setMeta(previewKey, DecorationSet.create(editor.state.doc, decorations)));
+  editor.view.dispatch(
+    editor.state.tr.setMeta(
+      previewKey,
+      DecorationSet.create(editor.state.doc, decorations)
+    )
+  );
 }
 
-export function selectionIsCurrent(editor: Editor, sources: SelectionSourceSegment[]) {
-  return sources.every((source) => editor.state.doc.textBetween(source.pmFrom, source.pmTo, "\n", "\ufffc") === source.text);
+export function selectionIsCurrent(
+  editor: Editor,
+  sources: SelectionSourceSegment[]
+) {
+  return sources.every(
+    (source) =>
+      editor.state.doc.textBetween(
+        source.pmFrom,
+        source.pmTo,
+        "\n",
+        "\ufffc"
+      ) === source.text
+  );
 }
 
-export function applySelectionAiResult(editor: Editor, sources: SelectionSourceSegment[], results: SelectionAiSegment[]) {
+export function selectionAiResultsFromOperations(
+  sources: SelectionSourceSegment[],
+  batch: DocumentOperationBatch
+): SelectionAiSegment[] {
+  return sources.flatMap((source) => {
+    const operation = batch.operations.find(
+      (candidate) =>
+        candidate.type === "replace-text" &&
+        candidate.target.blockId === source.blockId &&
+        candidate.target.from === source.blockFrom &&
+        candidate.target.to === source.blockTo
+    );
+    return operation && operation.type === "replace-text"
+      ? [
+          {
+            id: source.id,
+            result: operation.text,
+            category: "naturalness",
+            explanationVi: "",
+            exampleEn: "",
+            register: "neutral",
+            confidence: 1,
+          },
+        ]
+      : [];
+  });
+}
+
+export function applySelectionAiResult(
+  editor: Editor,
+  sources: SelectionSourceSegment[],
+  results: SelectionAiSegment[],
+  origin?: string
+) {
   if (!selectionIsCurrent(editor, sources)) return false;
   const byId = new Map(results.map((result) => [result.id, result]));
   let tr = editor.state.tr;
@@ -171,9 +261,14 @@ export function applySelectionAiResult(editor: Editor, sources: SelectionSourceS
     const result = byId.get(source.id);
     if (!result || result.result === source.text) continue;
     const marks = editor.state.doc.resolve(source.pmFrom).marks();
-    tr = tr.replaceWith(source.pmFrom, source.pmTo, editor.schema.text(result.result, marks));
+    tr = tr.replaceWith(
+      source.pmFrom,
+      source.pmTo,
+      editor.schema.text(result.result, marks)
+    );
   }
   tr.setMeta("addToHistory", true).setMeta(previewKey, "clear");
+  if (origin) tr.setMeta("documentOperationOrigin", origin);
   editor.view.dispatch(tr);
   return true;
 }

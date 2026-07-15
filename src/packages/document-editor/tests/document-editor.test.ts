@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { Editor } from "@tiptap/core";
 import {
   applyDocumentOperations,
+  applyDocumentOperationsToEditor,
   createDocumentEditorSession,
   createDocumentEditorExtensions,
   createPortableExcerpt,
@@ -136,6 +138,42 @@ describe("document-editor public interface", () => {
     );
     expect(editor.undo()).toBe(true);
     expect(editor.getText()).toBe("A marked heading\nNested item\nChild");
+    editor.destroy();
+  });
+
+  it("marks canonical live application as one undoable transaction", () => {
+    const editor = new Editor({
+      content: source,
+      extensions: createDocumentEditorExtensions(),
+    });
+    const batch: DocumentOperationBatch = {
+      baseContentRevision: 7,
+      operations: [
+        {
+          type: "replace-text",
+          target: {
+            blockId: "heading",
+            expectedText: "A marked heading",
+            from: 0,
+            to: 1,
+          },
+          text: "The",
+        },
+      ],
+    };
+    let origin: unknown;
+    editor.on("transaction", ({ transaction }) => {
+      origin = transaction.getMeta("documentOperationOrigin");
+    });
+    applyDocumentOperationsToEditor(
+      editor,
+      batch,
+      7,
+      "server-canonical-proposal"
+    );
+    expect(origin).toBe("server-canonical-proposal");
+    expect(editor.commands.undo()).toBe(true);
+    expect(editor.getText()).toContain("A marked heading");
     editor.destroy();
   });
 
