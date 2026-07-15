@@ -282,10 +282,7 @@ export function WritingWorkspace({
   const persist = useCallback(
     (
       patch: Partial<
-        Pick<
-          PageRow,
-          "title" | "content" | "plainText" | "parentId" | "position"
-        >
+        Pick<PageRow, "title" | "content" | "parentId" | "position">
       >,
       id: string
     ) => {
@@ -422,7 +419,6 @@ export function WritingWorkspace({
             persist(
               {
                 content: current.getJSON(),
-                plainText: buildPlainTextIndex(current.state.doc).text,
               },
               snapshot.id
             ),
@@ -462,10 +458,7 @@ export function WritingWorkspace({
     });
     const canonical = buildPlainTextIndex(editor.state.doc).text;
     if (page.plainText !== canonical)
-      void persist(
-        { content: editor.getJSON(), plainText: canonical },
-        page.id
-      );
+      void persist({ content: editor.getJSON() }, page.id);
   }, [activeId, editor, persist, updateSelectionAi]);
 
   useEffect(() => {
@@ -491,7 +484,7 @@ export function WritingWorkspace({
       current.plainText !== plainText ||
       JSON.stringify(current.content) !== JSON.stringify(content)
     ) {
-      await persist({ content, plainText }, current.id);
+      await persist({ content }, current.id);
     }
     return pagesRef.current.find((page) => page.id === current.id) ?? current;
   }, [activePage, editor, persist]);

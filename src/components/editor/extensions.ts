@@ -1,80 +1,25 @@
 import { Extension, type JSONContent } from "@tiptap/core";
-import UniqueID, { generateUniqueIds } from "@tiptap/extension-unique-id";
-import StarterKit from "@tiptap/starter-kit";
-import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
-import { createLowlight, common } from "lowlight";
+import { generateUniqueIds } from "@tiptap/extension-unique-id";
 import { ReactNodeViewRenderer } from "@tiptap/react";
 import { CodeBlockComponent } from "./CodeBlock";
+import {
+  BLOCK_ID_ATTRIBUTE,
+  BlockAppearance,
+  BlockIdentity,
+  documentExtensions,
+  StoredDocumentCodeBlock,
+  WritingMarks,
+} from "@/packages/documents";
 
-const lowlight = createLowlight(common);
+export { BLOCK_ID_ATTRIBUTE, BlockAppearance, BlockIdentity, WritingMarks };
 
-export const CustomCodeBlockLowlight = CodeBlockLowlight.configure({
-  lowlight,
-  defaultLanguage: "plaintext",
-}).extend({
+export const CustomCodeBlockLowlight = StoredDocumentCodeBlock.extend({
   addNodeView() {
     return ReactNodeViewRenderer(CodeBlockComponent);
   },
 });
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
-import Underline from "@tiptap/extension-underline";
-import Link from "@tiptap/extension-link";
-import { TextStyle } from "@tiptap/extension-text-style";
-import Color from "@tiptap/extension-color";
-import Highlight from "@tiptap/extension-highlight";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-
-export const BLOCK_ID_ATTRIBUTE = "blockId";
-export const BLOCK_TYPES = [
-  "paragraph",
-  "heading",
-  "listItem",
-  "taskItem",
-  "blockquote",
-  "codeBlock",
-];
-
-export const BlockIdentity = UniqueID.configure({
-  attributeName: BLOCK_ID_ATTRIBUTE,
-  types: BLOCK_TYPES,
-  generateID: () => crypto.randomUUID(),
-});
-
-export const BlockAppearance = Extension.create({
-  name: "blockAppearance",
-  addGlobalAttributes() {
-    return [
-      {
-        types: BLOCK_TYPES,
-        attributes: {
-          blockColor: {
-            default: null,
-            parseHTML: (element) => element.getAttribute("data-block-color"),
-            renderHTML: (attributes) => ({
-              ...(attributes.blockColor
-                ? { "data-block-color": attributes.blockColor }
-                : {}),
-              ...(attributes.blockId
-                ? { id: `block=${attributes.blockId}` }
-                : {}),
-            }),
-          },
-          blockBackground: {
-            default: null,
-            parseHTML: (element) =>
-              element.getAttribute("data-block-background"),
-            renderHTML: (attributes) =>
-              attributes.blockBackground
-                ? { "data-block-background": attributes.blockBackground }
-                : {},
-          },
-        },
-      },
-    ];
-  },
-});
 
 const blockHighlightKey = new PluginKey<DecorationSet>(
   "blockDeepLinkHighlight"
@@ -139,26 +84,7 @@ export const BlockDeepLinkHighlight = Extension.create({
 });
 
 export const identityExtensions = [
-  StarterKit.configure({ link: false, underline: false, codeBlock: false }),
-  TaskList,
-  TaskItem.configure({ nested: true }),
-  BlockIdentity,
-  BlockAppearance,
-  CustomCodeBlockLowlight,
-];
-
-export const WritingMarks = [
-  Underline,
-  Link.configure({
-    openOnClick: false,
-    autolink: true,
-    linkOnPaste: true,
-    defaultProtocol: "https",
-    isAllowedUri: (url) => /^(https?:|mailto:)/i.test(url),
-  }),
-  TextStyle,
-  Color,
-  Highlight.configure({ multicolor: true }),
+  ...documentExtensions(CustomCodeBlockLowlight),
 ];
 
 export function addBlockIds(content: JSONContent) {
