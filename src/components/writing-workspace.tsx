@@ -1,8 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EditorContent, useEditor } from "@tiptap/react";
-import Placeholder from "@tiptap/extension-placeholder";
 import {
   Check,
   ChevronRight,
@@ -31,10 +29,7 @@ import {
 import { WorkspaceSidebar } from "@/components/workspace-sidebar";
 import { PracticeView } from "./practice-view";
 import { LiveCoach } from "./live-coach";
-import {
-  BlockDeepLinkHighlight,
-  identityExtensions,
-} from "./editor/extensions";
+import { EditorSession } from "./editor/editor-session";
 import { BlockControls, type AiAction } from "./editor/block-controls";
 import {
   AiCoachPanel,
@@ -58,7 +53,6 @@ import {
   type SelectionTone,
 } from "./editor/selection-bubble-menu";
 import {
-  SelectionAiPreview,
   applySelectionAiResult,
   buildPlainTextIndex,
   clearSelectionAiPreview,
@@ -238,7 +232,11 @@ export function WritingWorkspace({
   const activePage =
     pageList.find((page) => page.id === activeId) ?? pageList[0];
   const pagesRef = useRef(pageList);
-  const saveChain = useRef<Promise<void>>(Promise.resolve());
+  const activeIdRef = useRef(activeId);
+  const contentSaveChains = useRef(new Map<string, Promise<void>>());
+  const contentSaveGenerations = useRef(new Map<string, number>());
+  const dirtyContentPages = useRef(new Set<string>());
+  const metadataSaveChains = useRef(new Map<string, Promise<void>>());
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const slashRef = useRef(slash);
   const slashCommandsRef = useRef<RunnableEditorCommand[]>([]);
@@ -250,6 +248,7 @@ export function WritingWorkspace({
     null
   );
   const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const [editor, setEditor] = useState<Editor | null>(null);
 
   useEffect(() => {
     slashRef.current = slash;
@@ -257,6 +256,9 @@ export function WritingWorkspace({
   useEffect(() => {
     pagesRef.current = pageList;
   }, [pageList]);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
   useEffect(() => {
     selectionAiRef.current = selectionAi;
   }, [selectionAi]);
@@ -266,32 +268,72 @@ export function WritingWorkspace({
     setSelectionAi(next);
   }, []);
 
-  const updatePage = useCallback((updated: PageRow) => {
-    pagesRef.current = pagesRef.current
-      .map((page) => (page.id === updated.id ? updated : page))
-      .sort((a, b) => a.position - b.position);
-    setPageList(pagesRef.current);
-  }, []);
+  const updatePage = useCallback(
+    (updated: PageRow, kind: "content" | "metadata" | "full" = "full") => {
+      pagesRef.current = pagesRef.current
+        .map((page) => {
+          if (page.id !== updated.id) return page;
+          if (kind === "content")
+            return {
+              ...page,
+              contentRevision: updated.contentRevision,
+              version: Math.max(page.version, updated.version),
+              updatedAt: updated.updatedAt,
+            };
+          if (kind === "metadata")
+            return {
+              ...page,
+              title: updated.title,
+              parentId: updated.parentId,
+              position: updated.position,
+              metadataRevision: updated.metadataRevision,
+              version: Math.max(page.version, updated.version),
+              updatedAt: updated.updatedAt,
+            };
+          return updated;
+        })
+        .sort((a, b) => a.position - b.position);
+      setPageList(pagesRef.current);
+    },
+    []
+  );
 
-  const persist = useCallback(
+  const enqueueSave = useCallback(
     (
-      patch: Partial<
-        Pick<PageRow, "title" | "content" | "parentId" | "position">
-      >,
-      id: string
+      chains: Map<string, Promise<void>>,
+      id: string,
+      run: () => Promise<void>
     ) => {
-      const run = async () => {
+      const previous = chains.get(id) ?? Promise.resolve();
+      const next = previous.catch(() => undefined).then(run);
+      chains.set(
+        id,
+        next.catch(() => undefined)
+      );
+      return next;
+    },
+    []
+  );
+
+  const persistContent = useCallback(
+    (content: JSONContent, id: string, generation?: number) =>
+      enqueueSave(contentSaveChains.current, id, async () => {
         setSaving("saving");
         try {
-          const version = pagesRef.current.find(
+          const contentRevision = pagesRef.current.find(
             (page) => page.id === id
-          )?.version;
-          if (!version) return;
+          )?.contentRevision;
+          if (!contentRevision) return;
           const result = await api<{ page: PageRow }>(`/api/pages/${id}`, {
             method: "PATCH",
-            body: JSON.stringify({ ...patch, version }),
+            body: JSON.stringify({ content, contentRevision }),
           });
-          updatePage(result.page);
+          updatePage(result.page, "content");
+          if (
+            generation === undefined ||
+            contentSaveGenerations.current.get(id) === generation
+          )
+            dirtyContentPages.current.delete(id);
           setSaving("saved");
           setTimeout(() => setSaving("idle"), 1200);
         } catch (cause) {
@@ -299,79 +341,81 @@ export function WritingWorkspace({
           setError(
             cause instanceof Error ? cause.message : "Không thể lưu trang."
           );
+          throw cause;
         }
-      };
-      saveChain.current = saveChain.current.then(run, run);
-      return saveChain.current;
-    },
-    [updatePage]
+      }),
+    [enqueueSave, updatePage]
   );
 
-  const editor = useEditor({
-    immediatelyRender: false,
-    extensions: [
-      ...identityExtensions,
-      Placeholder.configure({ placeholder: "Bắt đầu viết… Gõ / để mở lệnh" }),
-      BlockDeepLinkHighlight,
-      SelectionAiPreview,
-    ],
-    content: activePage.content as JSONContent,
-    editorProps: {
-      attributes: { class: "tiptap notion-editor" },
-      handleDOMEvents: {
-        pointerdown: (view, event) => {
-          const pointer = event as PointerEvent;
-          if (pointer.pointerType !== "mouse")
-            requestAnimationFrame(() =>
-              view.dom.dispatchEvent(
-                new MouseEvent("mousemove", {
-                  bubbles: true,
-                  clientX: pointer.clientX,
-                  clientY: pointer.clientY,
-                })
-              )
-            );
-          return false;
-        },
-      },
-      handleKeyDown: (_, event) => {
-        const current = slashRef.current;
-        if (!current.open) return false;
-        const count = filterSlashCommands(
-          slashCommandsRef.current,
-          current.query
-        ).length;
-        if (event.key === "ArrowDown") {
-          event.preventDefault();
-          setSlash((value) => ({
-            ...value,
-            selected: (value.selected + 1) % Math.max(count, 1),
-          }));
-          return true;
+  const persistMetadata = useCallback(
+    (
+      patch: Partial<Pick<PageRow, "title" | "parentId" | "position">>,
+      id: string
+    ) =>
+      enqueueSave(metadataSaveChains.current, id, async () => {
+        setSaving("saving");
+        try {
+          const metadataRevision = pagesRef.current.find(
+            (page) => page.id === id
+          )?.metadataRevision;
+          if (!metadataRevision) return;
+          const result = await api<{ page: PageRow }>(`/api/pages/${id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ ...patch, metadataRevision }),
+          });
+          updatePage(result.page, "metadata");
+          setSaving("saved");
+          setTimeout(() => setSaving("idle"), 1200);
+        } catch (cause) {
+          setSaving("error");
+          setError(
+            cause instanceof Error ? cause.message : "Không thể lưu trang."
+          );
+          throw cause;
         }
-        if (event.key === "ArrowUp") {
-          event.preventDefault();
-          setSlash((value) => ({
-            ...value,
-            selected:
-              (value.selected - 1 + Math.max(count, 1)) % Math.max(count, 1),
-          }));
-          return true;
-        }
-        if (event.key === "Enter") {
-          event.preventDefault();
-          executeRef.current(current.selected);
-          return true;
-        }
-        if (event.key === "Escape") {
-          event.preventDefault();
-          setSlash((value) => ({ ...value, open: false }));
-          return true;
-        }
-        return false;
-      },
-    },
-    onUpdate: ({ editor: current }) => {
+      }),
+    [enqueueSave, updatePage]
+  );
+
+  const handleEditorKeyDown = useCallback((event: KeyboardEvent) => {
+    const current = slashRef.current;
+    if (!current.open) return false;
+    const count = filterSlashCommands(
+      slashCommandsRef.current,
+      current.query
+    ).length;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setSlash((value) => ({
+        ...value,
+        selected: (value.selected + 1) % Math.max(count, 1),
+      }));
+      return true;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setSlash((value) => ({
+        ...value,
+        selected:
+          (value.selected - 1 + Math.max(count, 1)) % Math.max(count, 1),
+      }));
+      return true;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      executeRef.current(current.selected);
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setSlash((value) => ({ ...value, open: false }));
+      return true;
+    }
+    return false;
+  }, []);
+
+  const handleEditorUpdate = useCallback(
+    (current: Editor) => {
       if (
         selectionContextRef.current &&
         selectionAiRef.current.mode !== "idle"
@@ -400,20 +444,30 @@ export function WritingWorkspace({
       } else
         setSlash((value) => (value.open ? { ...value, open: false } : value));
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      const snapshot = pagesRef.current.find((page) => page.id === activeId);
-      if (snapshot)
+      const snapshot = pagesRef.current.find(
+        (page) => page.id === activeIdRef.current
+      );
+      if (snapshot) {
+        const generation =
+          (contentSaveGenerations.current.get(snapshot.id) ?? 0) + 1;
+        contentSaveGenerations.current.set(snapshot.id, generation);
+        dirtyContentPages.current.add(snapshot.id);
         saveTimer.current = setTimeout(
           () =>
-            persist(
-              {
-                content: current.getJSON(),
-              },
-              snapshot.id
-            ),
+            void persistContent(
+              current.getJSON(),
+              snapshot.id,
+              generation
+            ).catch(() => undefined),
           900
         );
+      }
     },
-    onSelectionUpdate: ({ editor: current }) => {
+    [persistContent, updateSelectionAi]
+  );
+
+  const handleEditorSelectionUpdate = useCallback(
+    (current: Editor) => {
       if (!current.state.selection.empty)
         lastTextSelectionRef.current = {
           from: current.state.selection.from,
@@ -427,27 +481,23 @@ export function WritingWorkspace({
       clearSelectionAiPreview(current);
       updateSelectionAi({ mode: "stale" });
     },
-    onCreate: ({ editor: current }) =>
-      window.setTimeout(() => revealHashBlock(current), 0),
-  });
+    [updateSelectionAi]
+  );
 
-  useEffect(() => {
-    if (!editor) return;
-    const page = pagesRef.current.find(
-      (candidate) => candidate.id === activeId
-    );
-    if (!page) return;
-    selectionAbortRef.current?.abort();
-    selectionContextRef.current = null;
-    updateSelectionAi({ mode: "idle" });
-    clearSelectionAiPreview(editor);
-    editor.commands.setContent(page.content as JSONContent, {
-      emitUpdate: false,
-    });
-    const canonical = buildPlainTextIndex(editor.state.doc).text;
-    if (page.plainText !== canonical)
-      void persist({ content: editor.getJSON() }, page.id);
-  }, [activeId, editor, persist, updateSelectionAi]);
+  const handleEditorCreate = useCallback(
+    (current: Editor, pageId: string) => {
+      const currentPage = pagesRef.current.find((page) => page.id === pageId);
+      if (
+        currentPage &&
+        currentPage.plainText !== buildPlainTextIndex(current.state.doc).text
+      )
+        void persistContent(current.getJSON(), currentPage.id).catch(
+          () => undefined
+        );
+      window.setTimeout(() => revealHashBlock(current), 0);
+    },
+    [persistContent]
+  );
 
   useEffect(() => {
     if (!editor) return;
@@ -463,19 +513,18 @@ export function WritingWorkspace({
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
-    await saveChain.current;
+    await (contentSaveChains.current.get(activePage.id) ?? Promise.resolve());
     const current =
       pagesRef.current.find((page) => page.id === activePage.id) ?? activePage;
-    const content = editor.getJSON();
-    const plainText = buildPlainTextIndex(editor.state.doc).text;
-    if (
-      current.plainText !== plainText ||
-      JSON.stringify(current.content) !== JSON.stringify(content)
-    ) {
-      await persist({ content }, current.id);
+    if (dirtyContentPages.current.has(current.id)) {
+      await persistContent(
+        editor.getJSON(),
+        current.id,
+        contentSaveGenerations.current.get(current.id)
+      );
     }
     return pagesRef.current.find((page) => page.id === current.id) ?? current;
-  }, [activePage, editor, persist]);
+  }, [activePage, editor, persistContent]);
 
   const review = useCallback(async () => {
     if (!editor || !activePage) return;
@@ -772,8 +821,20 @@ export function WritingWorkspace({
     executeRef.current = chooseSlashCommand;
   }, [chooseSlashCommand]);
 
+  const loadPage = useCallback(
+    async (id: string) => {
+      const result = await api<{ pages: PageRow[] }>("/api/pages");
+      const page = result.pages.find((candidate) => candidate.id === id);
+      if (!page) throw new Error("Không tìm thấy trang.");
+      updatePage(page);
+      return page;
+    },
+    [updatePage]
+  );
+
   async function addPage() {
     try {
+      await flushEditor();
       const result = await api<{ page: PageRow }>("/api/pages", {
         method: "POST",
         body: JSON.stringify({ title: "Trang mới" }),
@@ -789,6 +850,7 @@ export function WritingWorkspace({
   async function deletePage(pageId: string) {
     if (pageList.length <= 1) return false;
     try {
+      if (pageId === activeId) await flushEditor();
       const result = await api<{ deletedIds: string[] }>(
         `/api/pages/${pageId}`,
         { method: "DELETE" }
@@ -800,6 +862,7 @@ export function WritingWorkspace({
       setPageList(next);
       if (deleted.has(activeId)) {
         const nextActiveId = next[0].id;
+        await loadPage(nextActiveId);
         setActiveId(nextActiveId);
         setView("write");
         window.history.replaceState(
@@ -833,21 +896,31 @@ export function WritingWorkspace({
     if (action === "indent") {
       const previous = pages[currentIndex - 1];
       if (previous && previous.id !== page.id)
-        await persist(
+        await persistMetadata(
           { parentId: previous.id, position: previous.position },
           page.id
         );
     } else if (action === "outdent") {
-      await persist({ parentId: null, position: pages.length }, page.id);
+      await persistMetadata(
+        { parentId: null, position: pages.length },
+        page.id
+      );
     } else {
       const target = siblings[siblingPosition + (action === "up" ? -1 : 1)];
       if (!target) return;
       const oldPosition = page.position;
-      await persist({ position: target.position }, page.id);
-      await persist({ position: oldPosition }, target.id);
+      await persistMetadata({ position: target.position }, page.id);
+      await persistMetadata({ position: oldPosition }, target.id);
     }
   }
-  function selectPage(id: string) {
+  async function selectPage(id: string) {
+    if (id === activeId) return;
+    try {
+      await flushEditor();
+      await loadPage(id);
+    } catch {
+      return;
+    }
     selectionAbortRef.current?.abort();
     selectionContextRef.current = null;
     updateSelectionAi({ mode: "idle" });
@@ -858,8 +931,8 @@ export function WritingWorkspace({
     setView("write");
     window.history.replaceState(null, "", `/workspace?page=${id}`);
   }
-  function renamePage(id: string) {
-    selectPage(id);
+  async function renamePage(id: string) {
+    await selectPage(id);
     window.setTimeout(() => {
       titleInputRef.current?.focus();
       titleInputRef.current?.select();
@@ -986,20 +1059,19 @@ export function WritingWorkspace({
                 className="title-input"
                 aria-label="Tiêu đề trang"
                 value={activePage.title}
-                onChange={(event) =>
-                  setPageList((current) =>
-                    current.map((page) =>
-                      page.id === activePage.id
-                        ? { ...page, title: event.target.value }
-                        : page
-                    )
-                  )
-                }
+                onChange={(event) => {
+                  pagesRef.current = pagesRef.current.map((page) =>
+                    page.id === activePage.id
+                      ? { ...page, title: event.target.value }
+                      : page
+                  );
+                  setPageList(pagesRef.current);
+                }}
                 onBlur={() =>
-                  persist(
+                  void persistMetadata(
                     { title: activePage.title || "Không có tiêu đề" },
                     activePage.id
-                  )
+                  ).catch(() => undefined)
                 }
               />
               {error && (
@@ -1008,7 +1080,16 @@ export function WritingWorkspace({
                 </div>
               )}
               <div className="notion-editor-shell">
-                <EditorContent editor={editor} />
+                <EditorSession
+                  key={activePage.id}
+                  pageId={activePage.id}
+                  content={activePage.content as JSONContent}
+                  onReady={setEditor}
+                  onUpdate={handleEditorUpdate}
+                  onSelectionUpdate={handleEditorSelectionUpdate}
+                  onCreate={handleEditorCreate}
+                  onKeyDown={handleEditorKeyDown}
+                />
                 {editor && (
                   <>
                     <SelectionBubbleMenu

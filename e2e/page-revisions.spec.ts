@@ -82,4 +82,7 @@ test("keeps StoredDocument and Page metadata revisions independent", async ({
   await expect(staleMetadataResponse.json()).resolves.toMatchObject({
     code: "METADATA_REVISION_CONFLICT",
   });
+
+  const deleteResponse = await request.delete(`/api/pages/${pageId}`);
+  expect(deleteResponse).toBeOK();
 });
