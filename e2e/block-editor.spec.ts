@@ -269,6 +269,128 @@ test("shows the selection bubble, previews inline AI diff, accepts, and undoes",
   await expect(first).toContainText("First block");
 });
 
+test("restores a pending selection proposal after reloading its Page", async ({
+  page,
+}) => {
+  const first = page.locator(
+    "[data-blockid='00000000-0000-4000-8000-000000000101']"
+  );
+  await page.route("**/api/document-proposals?*", (route) => {
+    const pageId = new URL(route.request().url()).searchParams.get("pageId");
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        page: { id: pageId, version: 1 },
+        proposals: [
+          {
+            id: "00000000-0000-4000-8000-000000000199",
+            baseContentRevision: 1,
+            summaryVi: "Đề xuất trước đó.",
+            action: "improve",
+            status: "pending",
+            operations: {
+              baseContentRevision: 1,
+              operations: [
+                {
+                  type: "replace-text",
+                  target: {
+                    blockId: "00000000-0000-4000-8000-000000000101",
+                    expectedText: "First block",
+                    from: 0,
+                    to: "First block".length,
+                  },
+                  text: "Opening",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+  });
+
+  await page.reload();
+
+  await expect(first).toContainText("First block");
+  await expect(page.locator(".selection-ai-removal")).toHaveCount(1);
+  await expect(page.locator(".selection-ai-addition")).toHaveCount(1);
+  await expect(
+    page.getByText("Đề xuất trước đó.", { exact: true })
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Chấp nhận" })).toBeVisible();
+});
+
+test("offers a safe regenerate action for a stale proposal after reload", async ({
+  page,
+}) => {
+  const first = page.locator(
+    "[data-blockid='00000000-0000-4000-8000-000000000101']"
+  );
+  await page.route("**/api/document-proposals?*", (route) => {
+    const pageId = new URL(route.request().url()).searchParams.get("pageId");
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        page: { id: pageId, version: 1 },
+        proposals: [
+          {
+            id: "00000000-0000-4000-8000-000000000199",
+            baseContentRevision: 1,
+            summaryVi: "Đề xuất cũ.",
+            action: "improve",
+            status: "stale",
+            operations: {
+              baseContentRevision: 1,
+              operations: [
+                {
+                  type: "replace-text",
+                  target: {
+                    blockId: "00000000-0000-4000-8000-000000000101",
+                    expectedText: "Đoạn cũ",
+                    from: 0,
+                    to: 50,
+                  },
+                  text: "Opening",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+  });
+  await page.route("**/api/ai/transform", async (route) => {
+    const input = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        proposalId: undefined,
+        baseContentRevision: 1,
+        pageVersion: input.pageVersion,
+        noChange: true,
+        summaryVi: "Đoạn này đã ổn.",
+        operations: { baseContentRevision: 1, operations: [] },
+      }),
+    });
+  });
+
+  await page.reload();
+
+  await expect(page.getByRole("status")).toContainText(
+    "Đề xuất không còn khớp với đoạn cũ. Hãy chọn đoạn cần sửa rồi"
+  );
+  await first.click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+End");
+  await page.getByRole("button", { name: "Tạo lại" }).click();
+  await expect(
+    page.getByText("Đoạn này đã ổn.", { exact: true })
+  ).toBeVisible();
+});
+
 test("restores bullet and numbered list markers after Tailwind preflight", async ({
   page,
 }) => {

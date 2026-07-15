@@ -20,6 +20,8 @@ import {
 } from "lucide-react";
 import type { Editor, JSONContent } from "@tiptap/core";
 import type { DocumentOperationBatch } from "@/packages/document-editor";
+import type { PageDocumentProposal } from "@/packages/document-proposals";
+import { Button } from "@/components/ui/button";
 import type { pages } from "@/db/schema";
 import { Toaster } from "@/components/ui/sonner";
 import {
@@ -59,6 +61,8 @@ import {
   clearSelectionAiPreview,
   selectionIsCurrent,
   selectionSegments,
+  selectionSourcesForStaleOperations,
+  selectionSourcesForOperations,
   selectionSnapshot,
   selectionAiResultsFromOperations,
   showSelectionAiPreview,
@@ -81,8 +85,24 @@ type SelectionRequestContext = {
   from: number;
   to: number;
   sources: SelectionSourceSegment[];
+  action: SelectionAiAction;
+  tone?: SelectionTone;
+  instruction?: string;
   result?: SelectionAiResult;
 };
+type LoadedDocumentProposal = Pick<
+  PageDocumentProposal,
+  | "id"
+  | "baseContentRevision"
+  | "operations"
+  | "summaryVi"
+  | "action"
+  | "status"
+>;
+type StaleProposalRecovery = Pick<
+  SelectionRequestContext,
+  "pageId" | "action" | "tone" | "instruction"
+>;
 type RunnableEditorCommand = EditorCommand & { run(): void };
 
 const SLASH_COMMANDS: EditorCommand[] = [
@@ -161,6 +181,25 @@ function filterSlashCommands<T extends EditorCommand>(
   return commands.filter((command) =>
     `${command.key} ${command.label}`.toLowerCase().includes(query)
   );
+}
+
+function isSelectionAiAction(action: string): action is SelectionAiAction {
+  return [
+    "improve",
+    "natural",
+    "rewrite",
+    "shorten",
+    "expand",
+    "explain",
+    "phrase",
+    "custom",
+  ].includes(action);
+}
+
+function isLoadedSelectionProposal(
+  proposal: LoadedDocumentProposal
+): proposal is LoadedDocumentProposal & { action: SelectionAiAction } {
+  return isSelectionAiAction(proposal.action);
 }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -252,6 +291,10 @@ export function WritingWorkspace({
   );
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
+  const [editorPageId, setEditorPageId] = useState<string | null>(null);
+  const [staleProposalRecovery, setStaleProposalRecovery] =
+    useState<StaleProposalRecovery | null>(null);
+  const [proposalReloadKey, setProposalReloadKey] = useState(0);
 
   useEffect(() => {
     slashRef.current = slash;
@@ -661,6 +704,9 @@ export function WritingWorkspace({
           from,
           to,
           sources,
+          action,
+          tone,
+          instruction,
         };
         selectionContextRef.current = context;
         const result = await api<SelectionAiResult>("/api/ai/transform", {
@@ -738,13 +784,34 @@ export function WritingWorkspace({
     [activePage, editor, flushEditor, updateSelectionAi]
   );
 
+  const regenerateSelectionTransform = useCallback(() => {
+    const context = selectionContextRef.current;
+    if (!context || !editor || editor.state.selection.empty) {
+      setError("Hãy chọn đoạn cần tạo lại đề xuất.");
+      return;
+    }
+    setStaleProposalRecovery(null);
+    void runSelectionTransform(
+      context.action,
+      context.tone,
+      context.instruction,
+      {
+        from: editor.state.selection.from,
+        to: editor.state.selection.to,
+      }
+    );
+  }, [editor, runSelectionTransform]);
+
   const rejectSelectionTransform = useCallback(async () => {
     const context = selectionContextRef.current;
     selectionAbortRef.current?.abort();
     selectionContextRef.current = null;
     if (editor) clearSelectionAiPreview(editor);
     updateSelectionAi({ mode: "idle" });
-    if (context?.result?.proposalId) {
+    if (
+      context?.result?.proposalId &&
+      selectionAiRef.current.mode !== "stale"
+    ) {
       try {
         await api(
           `/api/document-proposals/${context.result.proposalId}/reject`,
@@ -752,6 +819,7 @@ export function WritingWorkspace({
             method: "POST",
           }
         );
+        setProposalReloadKey((value) => value + 1);
       } catch (cause) {
         setError(
           cause instanceof Error ? cause.message : "Không thể bỏ kết quả AI."
@@ -759,6 +827,90 @@ export function WritingWorkspace({
       }
     }
   }, [editor, updateSelectionAi]);
+
+  useEffect(() => {
+    if (!editor || editorPageId !== activePage.id) return;
+    const controller = new AbortController();
+    void api<{ page: PageRow; proposals: LoadedDocumentProposal[] }>(
+      `/api/document-proposals?pageId=${activePage.id}`,
+      { signal: controller.signal }
+    )
+      .then(({ page, proposals }) => {
+        if (controller.signal.aborted) return;
+        setStaleProposalRecovery(null);
+        const selectionProposals = proposals.filter(isLoadedSelectionProposal);
+        const proposal =
+          selectionProposals.find(
+            (candidate) => candidate.status === "pending"
+          ) ?? selectionProposals[0];
+        if (!proposal) return;
+        const sources =
+          proposal.status === "stale"
+            ? selectionSourcesForStaleOperations(editor, proposal.operations)
+            : selectionSourcesForOperations(editor, proposal.operations);
+        if (!sources?.length) {
+          if (proposal.status !== "stale") return;
+          selectionContextRef.current = {
+            pageId: page.id,
+            pageVersion: page.version,
+            from: 0,
+            to: 0,
+            sources: [],
+            action: proposal.action,
+          };
+          setStaleProposalRecovery({
+            pageId: page.id,
+            action: proposal.action,
+          });
+          return;
+        }
+        const from = Math.min(...sources.map((source) => source.pmFrom));
+        const to = Math.max(...sources.map((source) => source.pmTo));
+        selectionContextRef.current = {
+          pageId: page.id,
+          pageVersion: page.version,
+          from,
+          to,
+          sources,
+          action: proposal.action,
+          result: {
+            proposalId: proposal.id,
+            baseContentRevision: proposal.baseContentRevision,
+            pageVersion: page.version,
+            noChange: false,
+            summaryVi: proposal.summaryVi,
+            operations: proposal.operations,
+          },
+        };
+        if (proposal.status === "pending") {
+          showSelectionAiPreview(
+            editor,
+            sources,
+            selectionAiResultsFromOperations(sources, proposal.operations)
+          );
+          updateSelectionAi({ mode: "preview", summary: proposal.summaryVi });
+        } else {
+          setStaleProposalRecovery(null);
+          updateSelectionAi({ mode: "stale" });
+        }
+        editor.commands.setTextSelection({ from, to });
+      })
+      .catch((cause) => {
+        if (!controller.signal.aborted)
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Không thể tải đề xuất đang chờ."
+          );
+      });
+    return () => controller.abort();
+  }, [
+    activePage.id,
+    editor,
+    editorPageId,
+    proposalReloadKey,
+    updateSelectionAi,
+  ]);
 
   const acceptSelectionTransform = useCallback(async () => {
     const context = selectionContextRef.current;
@@ -815,6 +967,7 @@ export function WritingWorkspace({
       updateSelectionAi({ mode: "stale" });
     } finally {
       editor.setEditable(true);
+      setProposalReloadKey((value) => value + 1);
     }
   }, [editor, updatePage, updateSelectionAi]);
 
@@ -1117,12 +1270,24 @@ export function WritingWorkspace({
                   {error}
                 </div>
               )}
+              {staleProposalRecovery?.pageId === activePage.id && (
+                <div className="error-banner" role="status">
+                  Đề xuất không còn khớp với đoạn cũ. Hãy chọn đoạn cần sửa rồi
+                  <Button size="sm" onClick={regenerateSelectionTransform}>
+                    <Sparkles data-icon="inline-start" />
+                    Tạo lại
+                  </Button>
+                </div>
+              )}
               <div className="notion-editor-shell">
                 <EditorSession
                   key={activePage.id}
                   pageId={activePage.id}
                   content={activePage.content as JSONContent}
-                  onReady={setEditor}
+                  onReady={(current) => {
+                    setEditor(current);
+                    setEditorPageId(activePage.id);
+                  }}
                   onUpdate={handleEditorUpdate}
                   onSelectionUpdate={handleEditorSelectionUpdate}
                   onCreate={handleEditorCreate}
@@ -1137,6 +1302,7 @@ export function WritingWorkspace({
                       onAccept={acceptSelectionTransform}
                       onReject={rejectSelectionTransform}
                       onAbort={rejectSelectionTransform}
+                      onRegenerate={regenerateSelectionTransform}
                     />
                     <BlockControls
                       editor={editor}

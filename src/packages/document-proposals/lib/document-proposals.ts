@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { aiRuns, documentProposals, pages, workspaces } from "@/db/schema";
 import { ApiError } from "@/lib/api";
@@ -7,6 +7,7 @@ import {
   createPortableExcerpt,
   type DocumentOperationBatch,
 } from "@/packages/document-editor";
+import { isDocumentProposalStale } from "../lifecycle";
 
 export type SelectionProposalSegment = {
   blockId: string;
@@ -17,6 +18,9 @@ export type SelectionProposalSegment = {
 };
 
 type Page = typeof pages.$inferSelect;
+type Proposal = typeof documentProposals.$inferSelect;
+
+export type PageDocumentProposal = Proposal & { action: string };
 
 function selectionOperations(
   page: Page,
@@ -141,6 +145,96 @@ async function ownedProposal(
   return row;
 }
 
+async function ownedPageForProposalLoad(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  userId: string,
+  pageId: string
+) {
+  const [page] = await tx
+    .select({ page: pages })
+    .from(pages)
+    .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
+    .where(and(eq(pages.id, pageId), eq(workspaces.userId, userId)))
+    .for("update", { of: [pages] })
+    .limit(1);
+  if (!page) throw new ApiError(404, "Không tìm thấy trang.", "NOT_FOUND");
+  return page.page;
+}
+
+async function markProposalStale(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  proposalId: string
+) {
+  const [stale] = await tx
+    .update(documentProposals)
+    .set({ status: "stale", decidedAt: new Date() })
+    .where(
+      and(
+        eq(documentProposals.id, proposalId),
+        eq(documentProposals.status, "pending")
+      )
+    )
+    .returning();
+  if (!stale)
+    throw new ApiError(
+      409,
+      "Đề xuất vừa được xử lý ở nơi khác.",
+      "PROPOSAL_DECIDED"
+    );
+  return stale;
+}
+
+export async function loadPageDocumentProposals(
+  userId: string,
+  pageId: string
+) {
+  return db.transaction(async (tx) => {
+    const page = await ownedPageForProposalLoad(tx, userId, pageId);
+    const rows = await tx
+      .select({ proposal: documentProposals, action: aiRuns.action })
+      .from(documentProposals)
+      .innerJoin(aiRuns, eq(documentProposals.sourceRunId, aiRuns.id))
+      .where(
+        and(
+          eq(documentProposals.pageId, pageId),
+          inArray(documentProposals.status, ["pending", "stale"])
+        )
+      )
+      .orderBy(desc(documentProposals.createdAt))
+      .for("update", { of: [documentProposals] });
+    const staleIds = rows
+      .filter(
+        ({ proposal }) =>
+          proposal.status === "pending" &&
+          isDocumentProposalStale({
+            content: page.content,
+            contentRevision: page.contentRevision,
+            proposal,
+          })
+      )
+      .map(({ proposal }) => proposal.id);
+    if (staleIds.length) {
+      await tx
+        .update(documentProposals)
+        .set({ status: "stale", decidedAt: new Date() })
+        .where(
+          and(
+            inArray(documentProposals.id, staleIds),
+            eq(documentProposals.status, "pending")
+          )
+        );
+    }
+    return {
+      page,
+      proposals: rows.map(({ proposal, action }) => ({
+        ...proposal,
+        status: staleIds.includes(proposal.id) ? "stale" : proposal.status,
+        action,
+      })),
+    };
+  });
+}
+
 export async function acceptDocumentProposal(
   userId: string,
   proposalId: string
@@ -155,12 +249,14 @@ export async function acceptDocumentProposal(
         "Đề xuất không còn chờ phê duyệt.",
         "PROPOSAL_DECIDED"
       );
-    if (proposal.baseContentRevision !== page.contentRevision) {
-      const [stale] = await tx
-        .update(documentProposals)
-        .set({ status: "stale", decidedAt: new Date() })
-        .where(eq(documentProposals.id, proposal.id))
-        .returning();
+    if (
+      isDocumentProposalStale({
+        content: page.content,
+        contentRevision: page.contentRevision,
+        proposal,
+      })
+    ) {
+      const stale = await markProposalStale(tx, proposal.id);
       return { page, proposal: stale, idempotent: false, stale: true };
     }
     const applied = applyDocumentOperations({

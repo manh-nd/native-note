@@ -135,6 +135,64 @@ export function selectionSegments(
   });
 }
 
+function selectionSourcesForReplaceOperations(
+  editor: Editor,
+  batch: DocumentOperationBatch,
+  requireExpectedText: boolean
+): SelectionSourceSegment[] | null {
+  if (
+    !batch.operations.length ||
+    batch.operations.some((operation) => operation.type !== "replace-text")
+  )
+    return null;
+  const blocks = new Map(
+    buildPlainTextIndex(editor.state.doc).blocks.flatMap((block) =>
+      block.blockId ? [[block.blockId, block] as const] : []
+    )
+  );
+  const sources: SelectionSourceSegment[] = [];
+  for (const [index, operation] of batch.operations.entries()) {
+    if (operation.type !== "replace-text") return null;
+    const block = blocks.get(operation.target.blockId);
+    if (
+      !block ||
+      (requireExpectedText && block.text !== operation.target.expectedText) ||
+      operation.target.from < 0 ||
+      operation.target.to < operation.target.from ||
+      operation.target.to > block.text.length
+    )
+      return null;
+    const text = block.text.slice(operation.target.from, operation.target.to);
+    sources.push({
+      ...block,
+      blockId: operation.target.blockId,
+      id: `proposal-${index}`,
+      pmFrom: block.pmFrom + operation.target.from,
+      pmTo: block.pmFrom + operation.target.to,
+      plainFrom: block.plainFrom + operation.target.from,
+      plainTo: block.plainFrom + operation.target.to,
+      text,
+      blockFrom: operation.target.from,
+      blockTo: operation.target.to,
+    });
+  }
+  return sources;
+}
+
+export function selectionSourcesForOperations(
+  editor: Editor,
+  batch: DocumentOperationBatch
+) {
+  return selectionSourcesForReplaceOperations(editor, batch, true);
+}
+
+export function selectionSourcesForStaleOperations(
+  editor: Editor,
+  batch: DocumentOperationBatch
+) {
+  return selectionSourcesForReplaceOperations(editor, batch, false);
+}
+
 const previewKey = new PluginKey<DecorationSet>("selectionAiPreview");
 
 export const SelectionAiPreview = Extension.create({
