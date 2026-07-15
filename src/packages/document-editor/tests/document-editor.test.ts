@@ -7,6 +7,7 @@ import {
   createDocumentEditorExtensions,
   createPortableExcerpt,
   createDocumentTextIndex,
+  plainTextFromDocumentBlocks,
   prepareDocumentContent,
   type DocumentOperationBatch,
 } from "../index";
@@ -59,6 +60,29 @@ const source = {
 };
 
 describe("document-editor public interface", () => {
+  it("derives a preview from validated inserted block content", () => {
+    expect(
+      plainTextFromDocumentBlocks([
+        {
+          type: "listItem",
+          attrs: { blockId: "item" },
+          content: [
+            {
+              type: "paragraph",
+              attrs: { blockId: "item-text" },
+              content: [{ type: "text", text: "List preview" }],
+            },
+          ],
+        },
+        {
+          type: "paragraph",
+          attrs: { blockId: "paragraph" },
+          content: [{ type: "text", text: "Paragraph preview" }],
+        },
+      ])
+    ).toBe("List preview\nParagraph preview");
+  });
+
   it("indexes repeated text by its stable block identity and block-relative offsets", () => {
     const document = prepareDocumentContent({
       type: "doc",

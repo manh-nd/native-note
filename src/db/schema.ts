@@ -43,6 +43,7 @@ export const practiceVerdict = pgEnum("practice_verdict", [
 export const sessionKind = pgEnum("practice_kind", ["writing", "live"]);
 export const aiRunSourceKind = pgEnum("ai_run_source_kind", [
   "selection",
+  "block",
   "review",
 ]);
 export const aiRunStatus = pgEnum("ai_run_status", ["completed", "failed"]);

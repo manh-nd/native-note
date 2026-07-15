@@ -36,7 +36,11 @@ import { WorkspaceSidebar } from "@/components/workspace-sidebar";
 import { PracticeView } from "./practice-view";
 import { LiveCoach } from "./live-coach";
 import { EditorSession } from "./editor/editor-session";
-import { BlockControls, type AiAction } from "./editor/block-controls";
+import {
+  BlockControls,
+  type AiAction,
+  type BlockAiBehavior,
+} from "./editor/block-controls";
 import {
   AiCoachPanel,
   type AiTransform,
@@ -48,9 +52,7 @@ import {
 } from "./editor/slash-command-menu";
 import {
   blockSnapshot,
-  insertTextBlocksAfter,
   isAiBlockResultStale,
-  replaceBlockText,
 } from "./editor/block-utils";
 import {
   SelectionBubbleMenu,
@@ -100,6 +102,7 @@ type LoadedDocumentProposal = Pick<
   | "operations"
   | "summaryVi"
   | "action"
+  | "sourceKind"
   | "status"
 >;
 type StaleProposalRecovery = Pick<
@@ -199,10 +202,33 @@ function isSelectionAiAction(action: string): action is SelectionAiAction {
   ].includes(action);
 }
 
+function isBlockAiAction(action: string): action is AiAction {
+  return [
+    "improve",
+    "natural",
+    "rewrite",
+    "shorten",
+    "expand",
+    "explain",
+    "phrase",
+  ].includes(action);
+}
+
 function isLoadedSelectionProposal(
   proposal: LoadedDocumentProposal
 ): proposal is LoadedDocumentProposal & { action: SelectionAiAction } {
-  return isSelectionAiAction(proposal.action);
+  return proposal.sourceKind === "selection" && isSelectionAiAction(proposal.action);
+}
+
+function isLoadedBlockProposal(proposal: LoadedDocumentProposal) {
+  return proposal.sourceKind === "block";
+}
+
+function blockProposalTarget(batch: DocumentOperationBatch) {
+  const operation = batch.operations[0];
+  return operation?.type === "replace-text" || operation?.type === "insert-blocks-after"
+    ? operation.target
+    : null;
 }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -214,7 +240,9 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     const body = await response
       .json()
       .catch(() => ({ error: "Yêu cầu thất bại." }));
-    throw new Error(body.error ?? "Yêu cầu thất bại.");
+    throw Object.assign(new Error(body.error ?? "Yêu cầu thất bại."), {
+      code: body.code,
+    });
   }
   return response.json() as Promise<T>;
 }
@@ -599,19 +627,24 @@ export function WritingWorkspace({
   }, [editor, activePage, flushEditor]);
 
   const runTransform = useCallback(
-    async (action: AiAction, blockId: string) => {
+    async (
+      action: AiAction,
+      blockId: string,
+      behavior: BlockAiBehavior
+    ) => {
       if (!editor || !activePage) return;
       const snapshot = blockSnapshot(editor, blockId);
       const text = snapshot;
       if (!text?.trim()) return setError("Hãy viết một đoạn trước.");
       const sourceSnapshot = text;
+      const isExplanatory = action === "explain" || action === "phrase";
       setReviewing(true);
       setError("");
       try {
         const currentPage = await flushEditor();
         if (!currentPage) return;
         const result = await api<
-          Omit<AiTransform, "range" | "snapshot" | "stale">
+          Omit<AiTransform, "range" | "snapshot" | "stale" | "blockId">
         >("/api/ai/transform", {
           method: "POST",
           body: JSON.stringify({
@@ -620,22 +653,23 @@ export function WritingWorkspace({
             tone: "natural",
             text,
             scope: "block",
+            behavior,
             blockId,
-            pageVersion: currentPage.version,
+            contentRevision: currentPage.contentRevision,
           }),
         });
-        const livePage = pagesRef.current.find(
-          (page) => page.id === activePage.id
-        );
-        const stale = Boolean(
-          result.pageVersion &&
-          isAiBlockResultStale(
-            blockSnapshot(editor, blockId),
-            livePage?.version,
-            sourceSnapshot,
-            result.pageVersion
-          )
-        );
+        const livePage = pagesRef.current.find((page) => page.id === activePage.id);
+        const stale =
+          !isExplanatory &&
+          Boolean(
+            result.contentRevision &&
+              isAiBlockResultStale(
+                blockSnapshot(editor, blockId),
+                livePage?.contentRevision,
+                sourceSnapshot,
+                result.contentRevision
+              )
+          );
         setTransform({
           ...result,
           range: { from: 0, to: 0 },
@@ -841,6 +875,30 @@ export function WritingWorkspace({
       .then(({ page, proposals }) => {
         if (controller.signal.aborted) return;
         setStaleProposalRecovery(null);
+        const blockProposals = proposals.filter(isLoadedBlockProposal);
+        const blockProposal =
+          blockProposals.find((candidate) => candidate.status === "pending") ??
+          blockProposals[0];
+        const blockTarget = blockProposal
+          ? blockProposalTarget(blockProposal.operations)
+          : null;
+        if (blockProposal && blockTarget) {
+          setTransform({
+            explanationVi: blockProposal.summaryVi,
+            range: { from: 0, to: 0 },
+            blockId: blockTarget.blockId,
+            proposalId: blockProposal.id,
+            baseContentRevision: blockProposal.baseContentRevision,
+            operations: blockProposal.operations,
+            pageVersion: page.version,
+            snapshot: blockTarget.expectedText,
+            stale:
+              blockProposal.status === "stale" ||
+              blockSnapshot(editor, blockTarget.blockId) !==
+                blockTarget.expectedText,
+            action: blockProposal.action,
+          });
+        }
         const selectionProposals = proposals.filter(isLoadedSelectionProposal);
         const proposal =
           selectionProposals.find(
@@ -1178,36 +1236,91 @@ export function WritingWorkspace({
       if (action === "apply" && editor) editor.setEditable(true);
     }
   }
-  function applyTransform(mode: "replace" | "insert") {
-    if (!editor || !transform) return;
-    if (transform.blockId) {
-      const current = blockSnapshot(editor, transform.blockId);
-      const pageVersion = pagesRef.current.find(
-        (page) => page.id === activePage.id
-      )?.version;
+  async function applyTransform(action: "accept" | "reject") {
+    if (!editor || !transform?.proposalId || !transform.operations) return;
+    if (action === "reject") {
+      try {
+        await api(`/api/document-proposals/${transform.proposalId}/reject`, {
+          method: "POST",
+        });
+        setTransform(null);
+        setProposalReloadKey((value) => value + 1);
+      } catch (cause) {
+        setError(
+          cause instanceof Error ? cause.message : "Không thể bỏ đề xuất."
+        );
+      }
+      return;
+    }
+    try {
+      const currentPage = await flushEditor();
+      if (!currentPage) return;
       if (
+        currentPage.contentRevision !== transform.baseContentRevision ||
         !transform.snapshot ||
-        !transform.pageVersion ||
-        isAiBlockResultStale(
-          current,
-          pageVersion,
-          transform.snapshot,
-          transform.pageVersion
-        )
+        !transform.blockId ||
+        blockSnapshot(editor, transform.blockId) !== transform.snapshot
       ) {
         setTransform({ ...transform, stale: true });
         return;
       }
-      if (mode === "replace")
-        replaceBlockText(editor, transform.blockId, transform.result);
-      else insertTextBlocksAfter(editor, transform.blockId, transform.result);
-    } else if (mode === "replace" && transform.range.from > 0)
-      editor
-        .chain()
-        .focus()
-        .insertContentAt(transform.range, transform.result)
-        .run();
+      editor.setEditable(false);
+      const accepted = await api<{
+        page?: PageRow;
+        proposal?: { operations: DocumentOperationBatch };
+      }>(`/api/document-proposals/${transform.proposalId}/accept`, {
+        method: "POST",
+      });
+      if (!accepted.page || !accepted.proposal)
+        throw new Error("Máy chủ không trả về đề xuất canonical.");
+      try {
+        ignoreCanonicalEditorUpdate.current = true;
+        applyDocumentOperationsToEditor(
+          editor,
+          accepted.proposal.operations,
+          currentPage.contentRevision,
+          "server-canonical-proposal"
+        );
+        updatePage(accepted.page, "full");
+        editor.commands.focus();
+      } catch {
+        ignoreCanonicalEditorUpdate.current = false;
+        editor.commands.setContent(accepted.page.content as JSONContent, {
+          emitUpdate: false,
+        });
+        updatePage(accepted.page, "full");
+        setError("Đã tải lại nội dung canonical từ máy chủ.");
+      }
+      setTransform(null);
+      setProposalReloadKey((value) => value + 1);
+    } catch (cause) {
+      if (
+        cause instanceof Error &&
+        "code" in cause &&
+        (cause.code === "STALE_PROPOSAL" ||
+          cause.code === "CONTENT_REVISION_CONFLICT")
+      ) {
+        setTransform({ ...transform, stale: true });
+      }
+      setError(
+        cause instanceof Error ? cause.message : "Không thể áp dụng đề xuất."
+      );
+    } finally {
+      editor.setEditable(true);
+    }
+  }
+
+  function regenerateBlockTransform() {
+    if (!transform?.blockId || !transform.action || !isBlockAiAction(transform.action)) {
+      setError("Không thể tạo lại đề xuất này.");
+      return;
+    }
+    const behavior =
+      transform.operations?.operations[0]?.type === "insert-blocks-after"
+        ? "insert"
+        : "replace";
     setTransform(null);
+    void runTransform(transform.action, transform.blockId, behavior);
   }
 
   return (
@@ -1324,12 +1437,13 @@ export function WritingWorkspace({
                 )}
               </div>
             </section>
-            <AiCoachPanel
-              findings={findings}
-              transform={transform}
-              loading={reviewing}
-              onFinding={handleFinding}
-              onTransform={applyTransform}
+              <AiCoachPanel
+                findings={findings}
+                transform={transform}
+                loading={reviewing}
+                onFinding={handleFinding}
+                onRegenerateTransform={regenerateBlockTransform}
+                onTransform={applyTransform}
               onCloseTransform={() => setTransform(null)}
             />
             {slash.open && (

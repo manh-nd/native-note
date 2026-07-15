@@ -9,7 +9,10 @@ import {
 } from "@/lib/ai/schemas";
 import { ownedPage } from "@/lib/ownership";
 import { rateLimit } from "@/lib/rate-limit";
-import { createSelectionDocumentProposal } from "@/packages/document-proposals";
+import {
+  createBlockDocumentProposal,
+  createSelectionDocumentProposal,
+} from "@/packages/document-proposals";
 
 const actionSchema = z.enum([
   "improve",
@@ -28,8 +31,9 @@ const blockSchema = z.object({
   tone: toneSchema.default("natural"),
   text: z.string().min(1).max(5000),
   scope: z.literal("block"),
+  behavior: z.enum(["replace", "insert"]).default("replace"),
   blockId: z.string().uuid(),
-  pageVersion: z.number().int().positive(),
+  contentRevision: z.number().int().positive(),
 });
 
 const selectionSegmentSchema = z.object({
@@ -115,7 +119,11 @@ export async function POST(request: Request) {
     rateLimit(`transform:${userId}`, 20);
     const input = await parseJson(request, inputSchema);
     const page = await ownedPage(userId, input.pageId);
-    if (input.pageVersion !== page.version) {
+    const staleRequest =
+      input.scope === "block"
+        ? input.contentRevision !== page.contentRevision
+        : input.pageVersion !== page.version;
+    if (staleRequest) {
       return NextResponse.json(
         {
           error: "Trang đã thay đổi. Hãy thử lại trên phiên bản mới nhất.",
@@ -136,10 +144,40 @@ export async function POST(request: Request) {
         `Action: ${input.action}\nScope: block\nTone: ${input.tone}\nText:\n${input.text}`,
         systemInstruction
       );
+      if (isExplanatory) {
+        return NextResponse.json({
+          ...output,
+          result: input.text,
+          blockId: input.blockId,
+          contentRevision: page.contentRevision,
+        });
+      }
+      const proposal =
+        output.result === input.text
+          ? null
+          : await createBlockDocumentProposal({
+              page,
+              userId,
+              action: input.action,
+              behavior: input.behavior,
+              expectedText: input.text,
+              blockId: input.blockId,
+              result: output.result,
+              summaryVi: output.explanationVi,
+              alternatives: output.alternatives,
+              model: getTextModel(),
+            });
       return NextResponse.json({
-        ...output,
-        blockId: input.blockId,
-        pageVersion: page.version,
+        proposalId: proposal?.id,
+        baseContentRevision: page.contentRevision,
+        contentRevision: page.contentRevision,
+        noChange: !proposal,
+        explanationVi: output.explanationVi,
+        summaryVi: output.explanationVi,
+        operations: proposal?.operations ?? {
+          baseContentRevision: page.contentRevision,
+          operations: [],
+        },
       });
     }
 

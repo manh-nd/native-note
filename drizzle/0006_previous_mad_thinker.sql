@@ -1,0 +1,1 @@
+ALTER TYPE "public"."ai_run_source_kind" ADD VALUE 'block' BEFORE 'review';

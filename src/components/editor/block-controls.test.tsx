@@ -32,15 +32,33 @@ describe("BlockControls", () => {
     expect(within(controls).getByLabelText("Kéo block hoặc mở tùy chọn")).toBeInTheDocument();
   });
 
-  it("inserts a paragraph and opens the searchable block picker", async () => {
+  it("opens the searchable block picker without editing until a block type is chosen", async () => {
     const editor = makeEditor();
     render(<BlockControls editor={editor} pageId="00000000-0000-4000-8000-000000000001" onAskAI={vi.fn()}/>);
     await waitFor(() => expect(screen.getByLabelText("Thêm block bên dưới")).toBeInTheDocument());
     fireEvent.click(screen.getByLabelText("Thêm block bên dưới"));
-    expect(editor.state.doc.childCount).toBe(2);
+    expect(editor.state.doc.childCount).toBe(1);
     expect(await screen.findByPlaceholderText("Tìm loại block…")).toBeInTheDocument();
     expect(screen.getByText("Heading 1")).toBeInTheDocument();
     expect(screen.getByText("Ask AI")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Heading 1"));
+    expect(editor.state.doc.childCount).toBeGreaterThan(1);
+    expect(editor.state.doc.content.content.some((node) => node.type.name === "heading")).toBe(true);
+  });
+
+  it("starts an insert proposal from the existing block without adding an empty block", async () => {
+    const editor = makeEditor();
+    const originalId = editor.state.doc.firstChild?.attrs.blockId;
+    const onAskAI = vi.fn();
+    render(<BlockControls editor={editor} pageId="00000000-0000-4000-8000-000000000001" onAskAI={onAskAI}/>);
+    fireEvent.click(await screen.findByLabelText("Thêm block bên dưới"));
+    fireEvent.click(await screen.findByText("Ask AI"));
+    expect(editor.state.doc.childCount).toBe(1);
+    expect(onAskAI).toHaveBeenCalledWith(
+      "improve",
+      originalId,
+      "insert"
+    );
   });
 
   it("exposes the complete keyboard-accessible options menu", async () => {

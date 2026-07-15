@@ -219,6 +219,12 @@ export function plainTextFromDocument(document: ProseMirrorNode): string {
   return blocks.join("\n");
 }
 
+export function plainTextFromDocumentBlocks(blocks: DocumentContent[]): string {
+  return plainTextFromDocument(
+    toProseMirrorDocument({ type: "doc", content: blocks })
+  );
+}
+
 export function isEditableBlock(node: ProseMirrorNode): boolean {
   return editableBlockTypes.has(node.type.name);
 }

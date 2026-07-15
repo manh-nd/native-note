@@ -3,6 +3,7 @@ export {
   createDocumentEditorExtensions,
   DocumentCodeBlock,
   DocumentEditorError,
+  plainTextFromDocumentBlocks,
   prepareDocumentContent,
   type DocumentContent,
 } from "./lib/schema";

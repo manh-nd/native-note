@@ -14,6 +14,7 @@ import {
   applyDocumentOperations,
   createDocumentTextIndex,
   createPortableExcerpt,
+  type DocumentContent,
   type DocumentOperationBatch,
 } from "@/packages/document-editor";
 import { isDocumentProposalStale } from "../lifecycle";
@@ -26,10 +27,96 @@ export type SelectionProposalSegment = {
   result: string;
 };
 
+export type BlockProposalBehavior = "replace" | "insert";
+
+export function createBlockDocumentProposalOperations({
+  content,
+  contentRevision,
+  blockId,
+  expectedText,
+  result,
+  behavior,
+}: {
+  content: DocumentContent;
+  contentRevision: number;
+  blockId: string;
+  expectedText: string;
+  result: string;
+  behavior: BlockProposalBehavior;
+}): DocumentOperationBatch {
+  const block = createPortableExcerpt(content).find(
+    (excerpt) => excerpt.blockId === blockId
+  );
+  if (!block || block.text !== expectedText) {
+    throw new ApiError(
+      409,
+      "Block has changed. Create the proposal again.",
+      "STALE_BLOCK"
+    );
+  }
+  const target = { blockId, expectedText };
+  if (behavior === "replace") {
+    return {
+      baseContentRevision: contentRevision,
+      operations: [
+        {
+          type: "replace-text",
+          target: { ...target, from: 0, to: expectedText.length },
+          text: result,
+        },
+      ],
+    };
+  }
+  const blocks: DocumentContent[] = result
+    .split(/\n{2,}/)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text) => {
+      if (block.type === "listItem" || block.type === "taskItem") {
+        return {
+          type: block.type,
+          attrs: {
+            blockId: crypto.randomUUID(),
+            ...(block.type === "taskItem" &&
+            typeof block.attributes.checked === "boolean"
+              ? { checked: block.attributes.checked }
+              : {}),
+          },
+          content: [
+            {
+              type: "paragraph",
+              attrs: { blockId: crypto.randomUUID() },
+              content: [{ type: "text", text }],
+            },
+          ],
+        };
+      }
+      return {
+        type: "paragraph",
+        attrs: { blockId: crypto.randomUUID() },
+        content: [{ type: "text", text }],
+      };
+    });
+  if (!blocks.length) {
+    throw new ApiError(
+      502,
+      "AI did not return content to insert.",
+      "INVALID_AI_RESPONSE"
+    );
+  }
+  return {
+    baseContentRevision: contentRevision,
+    operations: [{ type: "insert-blocks-after", target, blocks }],
+  };
+}
+
 type Page = typeof pages.$inferSelect;
 type Proposal = typeof documentProposals.$inferSelect;
 
-export type PageDocumentProposal = Proposal & { action: string };
+export type PageDocumentProposal = Proposal & {
+  action: string;
+  sourceKind: "selection" | "block" | "review";
+};
 
 export type ReviewFindingDraft = {
   blockId: string;
@@ -146,6 +233,79 @@ export async function createSelectionDocumentProposal({
         sourceRunId: run.id,
         creatorId: userId,
         baseContentRevision: page.contentRevision,
+        operations,
+        summaryVi,
+      })
+      .returning();
+    return proposal;
+  });
+}
+
+export async function createBlockDocumentProposal({
+  page,
+  userId,
+  action,
+  behavior,
+  expectedText,
+  blockId,
+  result,
+  summaryVi,
+  alternatives,
+  model,
+}: {
+  page: Page;
+  userId: string;
+  action: string;
+  behavior: BlockProposalBehavior;
+  expectedText: string;
+  blockId: string;
+  result: string;
+  summaryVi: string;
+  alternatives: string[];
+  model: string;
+}) {
+  return db.transaction(async (tx) => {
+    const [currentPage] = await tx
+      .select()
+      .from(pages)
+      .where(eq(pages.id, page.id))
+      .for("update")
+      .limit(1);
+    if (!currentPage || currentPage.contentRevision !== page.contentRevision) {
+      throw new ApiError(
+        409,
+        "Nội dung đã thay đổi. Hãy tạo lại đề xuất.",
+        "STALE_BLOCK"
+      );
+    }
+    const operations = createBlockDocumentProposalOperations({
+      content: currentPage.content,
+      contentRevision: currentPage.contentRevision,
+      blockId,
+      expectedText,
+      result,
+      behavior,
+    });
+    const [run] = await tx
+      .insert(aiRuns)
+      .values({
+        pageId: currentPage.id,
+        creatorId: userId,
+        sourceKind: "block",
+        action,
+        model,
+        status: "completed",
+        inputSnapshot: expectedText,
+        outputSnapshot: { behavior, result, summaryVi, alternatives },
+      })
+      .returning();
+    const [proposal] = await tx
+      .insert(documentProposals)
+      .values({
+        pageId: currentPage.id,
+        sourceRunId: run.id,
+        creatorId: userId,
+        baseContentRevision: currentPage.contentRevision,
         operations,
         summaryVi,
       })
@@ -436,7 +596,11 @@ export async function loadPageDocumentProposals(
   return db.transaction(async (tx) => {
     const page = await ownedPageForProposalLoad(tx, userId, pageId);
     const rows = await tx
-      .select({ proposal: documentProposals, action: aiRuns.action })
+      .select({
+        proposal: documentProposals,
+        action: aiRuns.action,
+        sourceKind: aiRuns.sourceKind,
+      })
       .from(documentProposals)
       .innerJoin(aiRuns, eq(documentProposals.sourceRunId, aiRuns.id))
       .where(
@@ -471,10 +635,11 @@ export async function loadPageDocumentProposals(
     }
     return {
       page,
-      proposals: rows.map(({ proposal, action }) => ({
+      proposals: rows.map(({ proposal, action, sourceKind }) => ({
         ...proposal,
         status: staleIds.includes(proposal.id) ? "stale" : proposal.status,
         action,
+        sourceKind,
       })),
     };
   });

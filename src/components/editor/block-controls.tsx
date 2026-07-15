@@ -78,6 +78,7 @@ import {
 } from "./block-utils";
 
 type AiAction = "improve" | "natural" | "rewrite" | "shorten" | "expand" | "explain" | "phrase";
+type BlockAiBehavior = "replace" | "insert";
 
 const blockKinds: Array<{ kind: BlockKind; label: string; icon: React.ReactNode }> = [
   { kind: "paragraph", label: "Text", icon: <AlignLeft /> },
@@ -128,7 +129,7 @@ export function BlockControls({
 }: {
   editor: Editor;
   pageId: string;
-  onAskAI(action: AiAction, blockId: string): void;
+  onAskAI(action: AiAction, blockId: string, behavior: BlockAiBehavior): void;
 }) {
   const [target, setTarget] = useState<BlockTarget | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -170,15 +171,16 @@ export function BlockControls({
       return;
     }
     if (!target || pickerOpen) return;
-    const id = insertParagraphAfter(editor, target);
-    if (!id) return;
-    setPickerTargetId(id);
+    setPickerTargetId(target.id);
     lock(editor, true);
     requestAnimationFrame(() => setPickerOpen(true));
   }
 
   function chooseBlock(kind: BlockKind) {
-    if (pickerTargetId) turnBlockInto(editor, pickerTargetId, kind);
+    if (target) {
+      const insertedId = insertParagraphAfter(editor, target);
+      if (insertedId) turnBlockInto(editor, insertedId, kind);
+    }
     closePicker();
   }
 
@@ -284,7 +286,7 @@ export function BlockControls({
                 <CommandSeparator />
                 <CommandGroup heading="AI">
                   <CommandItem onSelect={() => {
-                    if (pickerTargetId) onAskAI("improve", pickerTargetId);
+                    if (pickerTargetId) onAskAI("improve", pickerTargetId, "insert");
                     closePicker();
                   }}>
                     <Sparkles /> Ask AI
@@ -342,11 +344,21 @@ export function BlockControls({
                 <DropdownMenuSubTrigger><Bot /> Ask AI</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent>
                   <DropdownMenuGroup>
-                    {aiActions.map((item) => (
-                      <DropdownMenuItem key={item.action} onClick={() => target && onAskAI(item.action, target.id)}>
-                        <WandSparkles />{item.label}
-                      </DropdownMenuItem>
-                    ))}
+                    {aiActions.map((item) =>
+                      item.action === "explain" || item.action === "phrase" ? (
+                        <DropdownMenuItem key={item.action} onClick={() => target && onAskAI(item.action, target.id, "replace")}>
+                          <WandSparkles />{item.label}
+                        </DropdownMenuItem>
+                      ) : (
+                        <DropdownMenuSub key={item.action}>
+                          <DropdownMenuSubTrigger><WandSparkles />{item.label}</DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            <DropdownMenuItem onClick={() => target && onAskAI(item.action, target.id, "replace")}>Replace block</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => target && onAskAI(item.action, target.id, "insert")}>Insert below</DropdownMenuItem>
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                      )
+                    )}
                   </DropdownMenuGroup>
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
@@ -429,4 +441,4 @@ export function BlockControls({
   </>;
 }
 
-export type { AiAction };
+export type { AiAction, BlockAiBehavior };

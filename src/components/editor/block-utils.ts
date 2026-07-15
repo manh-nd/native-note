@@ -30,7 +30,14 @@ export function normalizeBlockTarget(editor: Editor, node: ProseMirrorNode, pos:
 }
 
 export function blockText(node: ProseMirrorNode) {
-  return node.textBetween(0, node.content.size, "\n").trim();
+  if (node.isTextblock)
+    return node.textBetween(0, node.content.size, "\n", "\ufffc");
+  let text = "";
+  node.forEach((child) => {
+    if (text || !child.isTextblock) return;
+    text = child.textBetween(0, child.content.size, "\n", "\ufffc");
+  });
+  return text;
 }
 
 export function insertParagraphAfter(editor: Editor, target: BlockTarget) {
@@ -128,43 +135,6 @@ export function setBlockAppearance(editor: Editor, blockId: string, color: strin
   const target = findBlockById(editor, blockId);
   if (!target) return false;
   editor.view.dispatch(editor.state.tr.setNodeMarkup(target.pos, undefined, { ...target.node.attrs, blockColor: color, blockBackground: background }));
-  return true;
-}
-
-export function replaceBlockText(editor: Editor, blockId: string, result: string) {
-  const target = findBlockById(editor, blockId);
-  if (!target) return false;
-  const paragraphs = result.split(/\n{2,}/).map((text) => text.trim()).filter(Boolean);
-  if (!paragraphs.length) return false;
-  if ((target.node.type.name === "listItem" || target.node.type.name === "taskItem") && paragraphs.length === 1 && target.node.firstChild) {
-    const first = target.node.firstChild;
-    const replacement = editor.schema.nodes.paragraph.create({ ...first.attrs }, editor.schema.text(paragraphs[0]));
-    editor.view.dispatch(editor.state.tr.replaceWith(target.pos + 1, target.pos + 1 + first.nodeSize, replacement).scrollIntoView());
-    return true;
-  }
-  if (target.node.type.name === "blockquote" && paragraphs.length === 1) {
-    const paragraph = editor.schema.nodes.paragraph.create({ blockId: target.node.firstChild?.attrs.blockId ?? crypto.randomUUID() }, editor.schema.text(paragraphs[0]));
-    const replacement = target.node.type.create({ ...target.node.attrs }, paragraph);
-    editor.view.dispatch(editor.state.tr.replaceWith(target.pos, target.pos + target.node.nodeSize, replacement).scrollIntoView());
-    return true;
-  }
-  const compatible = ["paragraph", "heading", "codeBlock"].includes(target.node.type.name) && paragraphs.length === 1;
-  if (compatible) {
-    const replacement = target.node.type.create({ ...target.node.attrs }, target.node.type.name === "codeBlock" ? editor.schema.text(paragraphs[0]) : editor.schema.text(paragraphs[0]));
-    editor.view.dispatch(editor.state.tr.replaceWith(target.pos, target.pos + target.node.nodeSize, replacement).scrollIntoView());
-  } else {
-    const nodes = paragraphs.map((text) => editor.schema.nodes.paragraph.create({ blockId: crypto.randomUUID() }, editor.schema.text(text)));
-    editor.view.dispatch(editor.state.tr.replaceWith(target.pos, target.pos + target.node.nodeSize, nodes).scrollIntoView());
-  }
-  return true;
-}
-
-export function insertTextBlocksAfter(editor: Editor, blockId: string, result: string) {
-  const target = findBlockById(editor, blockId);
-  if (!target) return false;
-  const nodes = result.split(/\n{2,}/).map((text) => text.trim()).filter(Boolean).map((text) => editor.schema.nodes.paragraph.create({ blockId: crypto.randomUUID() }, editor.schema.text(text)));
-  if (!nodes.length) return false;
-  editor.view.dispatch(editor.state.tr.insert(target.pos + target.node.nodeSize, nodes).scrollIntoView());
   return true;
 }
 

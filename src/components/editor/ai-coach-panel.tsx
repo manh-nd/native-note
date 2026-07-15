@@ -3,6 +3,10 @@ import { Check, Save, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  plainTextFromDocumentBlocks,
+  type DocumentOperationBatch,
+} from "@/packages/document-editor";
 
 export type Finding = {
   id: string;
@@ -19,16 +23,30 @@ export type Finding = {
   proposalId: string | null;
 };
 export type AiTransform = {
-  result: string;
   explanationVi: string;
-  alternatives: string[];
   range: { from: number; to: number };
+  result?: string;
+  alternatives?: string[];
   blockId?: string;
+  proposalId?: string;
+  baseContentRevision?: number;
+  operations?: DocumentOperationBatch;
+  noChange?: boolean;
+  contentRevision?: number;
   pageVersion?: number;
   snapshot?: string;
   stale?: boolean;
   action?: string;
 };
+
+function proposalPreview(transform: AiTransform) {
+  const operation = transform.operations?.operations[0];
+  if (!operation) return null;
+  if (operation.type === "replace-text") return operation.text;
+  if (operation.type === "insert-blocks-after")
+    return plainTextFromDocumentBlocks(operation.blocks);
+  return null;
+}
 
 const categories: Record<string, string> = {
   grammar: "Ngữ pháp",
@@ -44,6 +62,7 @@ export function AiCoachPanel({
   transform,
   loading,
   onFinding,
+  onRegenerateTransform,
   onTransform,
   onCloseTransform,
 }: {
@@ -51,7 +70,8 @@ export function AiCoachPanel({
   transform: AiTransform | null;
   loading: boolean;
   onFinding(finding: Finding, action: "apply" | "dismiss" | "save"): void;
-  onTransform(mode: "replace" | "insert"): void;
+  onRegenerateTransform(): void;
+  onTransform(action: "accept" | "reject"): void;
   onCloseTransform(): void;
 }) {
   return (
@@ -81,9 +101,9 @@ export function AiCoachPanel({
                     : "Đề xuất AI"}
             </div>
             {transform.action !== "explain" &&
-              transform.action !== "phrase" && (
+              transform.action !== "phrase" && !transform.noChange && (
                 <div className="finding-change">
-                  <div className="finding-new">{transform.result}</div>
+                  <div className="finding-new">{proposalPreview(transform)}</div>
                 </div>
               )}
             <p>
@@ -92,19 +112,30 @@ export function AiCoachPanel({
                 : transform.explanationVi}
             </p>
             <div className="card-actions">
+              {transform.stale && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onRegenerateTransform}
+                >
+                  Tạo lại
+                </Button>
+              )}
               {!transform.stale &&
                 transform.action !== "explain" &&
-                transform.action !== "phrase" && (
+                transform.action !== "phrase" &&
+                transform.proposalId &&
+                !transform.noChange && (
                   <>
-                    <Button size="sm" onClick={() => onTransform("replace")}>
-                      Replace block
+                    <Button size="sm" onClick={() => onTransform("accept")}>
+                      Apply proposal
                     </Button>
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => onTransform("insert")}
+                      onClick={() => onTransform("reject")}
                     >
-                      Insert below
+                      Reject
                     </Button>
                   </>
                 )}
