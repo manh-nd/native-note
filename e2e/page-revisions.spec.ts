@@ -19,6 +19,11 @@ test("keeps StoredDocument and Page metadata revisions independent", async ({
     metadataRevision: expect.any(Number),
   });
 
+  const legacyVersionResponse = await request.patch(`/api/pages/${pageId}`, {
+    data: { title: "Legacy version write", version: 1 },
+  });
+  expect(legacyVersionResponse.status()).toBe(400);
+
   const content = structuredClone(initial.content);
   content.content[0].content = [{ type: "text", text: "Revised first block" }];
   const contentResponse = await request.patch(`/api/pages/${pageId}`, {
@@ -29,7 +34,6 @@ test("keeps StoredDocument and Page metadata revisions independent", async ({
   expect(afterContent).toMatchObject({
     contentRevision: initial.contentRevision + 1,
     metadataRevision: initial.metadataRevision,
-    version: initial.version + 1,
   });
 
   const metadataResponse = await request.patch(`/api/pages/${pageId}`, {
@@ -44,7 +48,6 @@ test("keeps StoredDocument and Page metadata revisions independent", async ({
     title: "Metadata-only title",
     contentRevision: afterContent.contentRevision,
     metadataRevision: afterContent.metadataRevision + 1,
-    version: afterContent.version + 1,
   });
 
   const contentAfterMetadata = structuredClone(afterMetadata.content);

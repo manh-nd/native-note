@@ -33,7 +33,6 @@ export type AiTransform = {
   operations?: DocumentOperationBatch;
   noChange?: boolean;
   contentRevision?: number;
-  pageVersion?: number;
   snapshot?: string;
   stale?: boolean;
   action?: string;
@@ -101,9 +100,12 @@ export function AiCoachPanel({
                     : "Đề xuất AI"}
             </div>
             {transform.action !== "explain" &&
-              transform.action !== "phrase" && !transform.noChange && (
+              transform.action !== "phrase" &&
+              !transform.noChange && (
                 <div className="finding-change">
-                  <div className="finding-new">{proposalPreview(transform)}</div>
+                  <div className="finding-new">
+                    {proposalPreview(transform)}
+                  </div>
                 </div>
               )}
             <p>

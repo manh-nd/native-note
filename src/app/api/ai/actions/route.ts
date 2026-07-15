@@ -57,7 +57,7 @@ const selectionSchema = z
     action: z.union([actionSchema, z.literal("custom")]),
     tone: toneSchema.optional(),
     instruction: z.string().trim().min(1).max(800).optional(),
-    pageVersion: z.number().int().positive(),
+    contentRevision: z.number().int().positive(),
     snapshot: z.string().min(1).max(5030),
     scope: z.literal("selection"),
     segments: z.array(selectionSegmentSchema).min(1).max(30),
@@ -116,18 +116,15 @@ function validateSelectionAgainstPage(
 export async function POST(request: Request) {
   try {
     const userId = await requireUserId();
-    rateLimit(`transform:${userId}`, 20);
+    rateLimit(`ai-action:${userId}`, 20);
     const input = await parseJson(request, inputSchema);
     const page = await ownedPage(userId, input.pageId);
-    const staleRequest =
-      input.scope === "block"
-        ? input.contentRevision !== page.contentRevision
-        : input.pageVersion !== page.version;
+    const staleRequest = input.contentRevision !== page.contentRevision;
     if (staleRequest) {
       return NextResponse.json(
         {
           error: "Trang đã thay đổi. Hãy thử lại trên phiên bản mới nhất.",
-          code: "VERSION_CONFLICT",
+          code: "CONTENT_REVISION_CONFLICT",
         },
         { status: 409 }
       );
@@ -243,7 +240,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       proposalId: proposal?.id,
       baseContentRevision: page.contentRevision,
-      pageVersion: page.version,
+      contentRevision: page.contentRevision,
       noChange: !proposal,
       summaryVi: output.summaryVi,
       operations: proposal?.operations ?? {

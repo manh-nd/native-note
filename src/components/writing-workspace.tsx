@@ -50,10 +50,7 @@ import {
   SlashCommandMenu,
   type EditorCommand,
 } from "./editor/slash-command-menu";
-import {
-  blockSnapshot,
-  isAiBlockResultStale,
-} from "./editor/block-utils";
+import { blockSnapshot, isAiBlockResultStale } from "./editor/block-utils";
 import {
   SelectionBubbleMenu,
   type SelectionAiAction,
@@ -86,7 +83,7 @@ type User = {
 type View = "write" | "practice" | "live";
 type SelectionRequestContext = {
   pageId: string;
-  pageVersion: number;
+  contentRevision: number;
   from: number;
   to: number;
   sources: SelectionSourceSegment[];
@@ -217,7 +214,9 @@ function isBlockAiAction(action: string): action is AiAction {
 function isLoadedSelectionProposal(
   proposal: LoadedDocumentProposal
 ): proposal is LoadedDocumentProposal & { action: SelectionAiAction } {
-  return proposal.sourceKind === "selection" && isSelectionAiAction(proposal.action);
+  return (
+    proposal.sourceKind === "selection" && isSelectionAiAction(proposal.action)
+  );
 }
 
 function isLoadedBlockProposal(proposal: LoadedDocumentProposal) {
@@ -226,7 +225,8 @@ function isLoadedBlockProposal(proposal: LoadedDocumentProposal) {
 
 function blockProposalTarget(batch: DocumentOperationBatch) {
   const operation = batch.operations[0];
-  return operation?.type === "replace-text" || operation?.type === "insert-blocks-after"
+  return operation?.type === "replace-text" ||
+    operation?.type === "insert-blocks-after"
     ? operation.target
     : null;
 }
@@ -354,7 +354,6 @@ export function WritingWorkspace({
             return {
               ...page,
               contentRevision: updated.contentRevision,
-              version: Math.max(page.version, updated.version),
               updatedAt: updated.updatedAt,
             };
           if (kind === "metadata")
@@ -364,7 +363,6 @@ export function WritingWorkspace({
               parentId: updated.parentId,
               position: updated.position,
               metadataRevision: updated.metadataRevision,
-              version: Math.max(page.version, updated.version),
               updatedAt: updated.updatedAt,
             };
           return updated;
@@ -627,11 +625,7 @@ export function WritingWorkspace({
   }, [editor, activePage, flushEditor]);
 
   const runTransform = useCallback(
-    async (
-      action: AiAction,
-      blockId: string,
-      behavior: BlockAiBehavior
-    ) => {
+    async (action: AiAction, blockId: string, behavior: BlockAiBehavior) => {
       if (!editor || !activePage) return;
       const snapshot = blockSnapshot(editor, blockId);
       const text = snapshot;
@@ -645,7 +639,7 @@ export function WritingWorkspace({
         if (!currentPage) return;
         const result = await api<
           Omit<AiTransform, "range" | "snapshot" | "stale" | "blockId">
-        >("/api/ai/transform", {
+        >("/api/ai/actions", {
           method: "POST",
           body: JSON.stringify({
             pageId: activePage.id,
@@ -658,17 +652,19 @@ export function WritingWorkspace({
             contentRevision: currentPage.contentRevision,
           }),
         });
-        const livePage = pagesRef.current.find((page) => page.id === activePage.id);
+        const livePage = pagesRef.current.find(
+          (page) => page.id === activePage.id
+        );
         const stale =
           !isExplanatory &&
           Boolean(
             result.contentRevision &&
-              isAiBlockResultStale(
-                blockSnapshot(editor, blockId),
-                livePage?.contentRevision,
-                sourceSnapshot,
-                result.contentRevision
-              )
+            isAiBlockResultStale(
+              blockSnapshot(editor, blockId),
+              livePage?.contentRevision,
+              sourceSnapshot,
+              result.contentRevision
+            )
           );
         setTransform({
           ...result,
@@ -737,7 +733,7 @@ export function WritingWorkspace({
         if (!savedPage || controller.signal.aborted) return;
         const context: SelectionRequestContext = {
           pageId: savedPage.id,
-          pageVersion: savedPage.version,
+          contentRevision: savedPage.contentRevision,
           from,
           to,
           sources,
@@ -746,7 +742,7 @@ export function WritingWorkspace({
           instruction,
         };
         selectionContextRef.current = context;
-        const result = await api<SelectionAiResult>("/api/ai/transform", {
+        const result = await api<SelectionAiResult>("/api/ai/actions", {
           method: "POST",
           signal: controller.signal,
           body: JSON.stringify({
@@ -755,7 +751,7 @@ export function WritingWorkspace({
             action,
             tone,
             instruction,
-            pageVersion: savedPage.version,
+            contentRevision: savedPage.contentRevision,
             snapshot: selectionSnapshot(sources),
             segments: sources.map((segment) => ({
               id: segment.id,
@@ -786,7 +782,7 @@ export function WritingWorkspace({
           return;
         }
         if (
-          livePage?.version !== result.pageVersion ||
+          livePage?.contentRevision !== result.contentRevision ||
           !selectionIsCurrent(editor, sources)
         ) {
           updateSelectionAi({ mode: "stale" });
@@ -890,7 +886,7 @@ export function WritingWorkspace({
             proposalId: blockProposal.id,
             baseContentRevision: blockProposal.baseContentRevision,
             operations: blockProposal.operations,
-            pageVersion: page.version,
+            contentRevision: page.contentRevision,
             snapshot: blockTarget.expectedText,
             stale:
               blockProposal.status === "stale" ||
@@ -913,7 +909,7 @@ export function WritingWorkspace({
           if (proposal.status !== "stale") return;
           selectionContextRef.current = {
             pageId: page.id,
-            pageVersion: page.version,
+            contentRevision: page.contentRevision,
             from: 0,
             to: 0,
             sources: [],
@@ -929,7 +925,7 @@ export function WritingWorkspace({
         const to = Math.max(...sources.map((source) => source.pmTo));
         selectionContextRef.current = {
           pageId: page.id,
-          pageVersion: page.version,
+          contentRevision: page.contentRevision,
           from,
           to,
           sources,
@@ -937,7 +933,7 @@ export function WritingWorkspace({
           result: {
             proposalId: proposal.id,
             baseContentRevision: proposal.baseContentRevision,
-            pageVersion: page.version,
+            contentRevision: page.contentRevision,
             noChange: false,
             summaryVi: proposal.summaryVi,
             operations: proposal.operations,
@@ -980,7 +976,7 @@ export function WritingWorkspace({
       (page) => page.id === context.pageId
     );
     if (
-      livePage?.version !== context.pageVersion ||
+      livePage?.contentRevision !== context.contentRevision ||
       !selectionIsCurrent(editor, context.sources)
     ) {
       updateSelectionAi({ mode: "stale" });
@@ -1202,7 +1198,23 @@ export function WritingWorkspace({
       const result = await api<{
         page?: PageRow;
         proposal?: { operations: DocumentOperationBatch };
-      }>(`/api/findings/${finding.id}/${action}`, { method: "POST" });
+        findings?: Array<{ id: string }>;
+        findingIds?: string[];
+      }>(
+        action === "apply"
+          ? `/api/document-proposals/${finding.proposalId}/accept`
+          : action === "save"
+            ? "/api/learning-items"
+            : finding.proposalId
+              ? `/api/document-proposals/${finding.proposalId}/reject`
+              : `/api/review-findings/${finding.id}/dismissal`,
+        {
+          method: "POST",
+          ...(action === "save"
+            ? { body: JSON.stringify({ findingId: finding.id }) }
+            : {}),
+        }
+      );
       if (action === "apply" && editor) {
         if (!result.page || !result.proposal)
           throw new Error("Máy chủ không trả về đề xuất canonical.");
@@ -1225,8 +1237,13 @@ export function WritingWorkspace({
           setError("Đã tải lại nội dung canonical từ máy chủ.");
         }
       }
+      const decidedFindingIds = new Set([
+        finding.id,
+        ...(result.findings?.map((item) => item.id) ?? []),
+        ...(result.findingIds ?? []),
+      ]);
       setFindings((current) =>
-        current.filter((item) => item.id !== finding.id)
+        current.filter((item) => !decidedFindingIds.has(item.id))
       );
     } catch (cause) {
       setError(
@@ -1311,7 +1328,11 @@ export function WritingWorkspace({
   }
 
   function regenerateBlockTransform() {
-    if (!transform?.blockId || !transform.action || !isBlockAiAction(transform.action)) {
+    if (
+      !transform?.blockId ||
+      !transform.action ||
+      !isBlockAiAction(transform.action)
+    ) {
       setError("Không thể tạo lại đề xuất này.");
       return;
     }
@@ -1437,13 +1458,13 @@ export function WritingWorkspace({
                 )}
               </div>
             </section>
-              <AiCoachPanel
-                findings={findings}
-                transform={transform}
-                loading={reviewing}
-                onFinding={handleFinding}
-                onRegenerateTransform={regenerateBlockTransform}
-                onTransform={applyTransform}
+            <AiCoachPanel
+              findings={findings}
+              transform={transform}
+              loading={reviewing}
+              onFinding={handleFinding}
+              onRegenerateTransform={regenerateBlockTransform}
+              onTransform={applyTransform}
               onCloseTransform={() => setTransform(null)}
             />
             {slash.open && (

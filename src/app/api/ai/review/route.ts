@@ -59,7 +59,6 @@ export async function POST(request: Request) {
     return NextResponse.json({
       findings: stored,
       contentRevision: page.contentRevision,
-      pageVersion: page.version,
     });
   } catch (error) {
     return apiError(error);

@@ -58,7 +58,7 @@ export type SelectionAiSegment = {
 export type SelectionAiResult = {
   proposalId?: string;
   baseContentRevision: number;
-  pageVersion: number;
+  contentRevision: number;
   noChange: boolean;
   summaryVi: string;
   operations: DocumentOperationBatch;

@@ -178,7 +178,7 @@ test("uses compact type-aware block spacing", async ({ page }) => {
 test("shows the selection bubble, previews inline AI diff, accepts, and undoes", async ({
   page,
 }) => {
-  await page.route("**/api/ai/transform", async (route) => {
+  await page.route("**/api/ai/actions", async (route) => {
     const input = route.request().postDataJSON();
     if (input.scope !== "selection") return route.continue();
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -188,7 +188,7 @@ test("shows the selection bubble, previews inline AI diff, accepts, and undoes",
       body: JSON.stringify({
         proposalId: "00000000-0000-4000-8000-000000000199",
         baseContentRevision: 1,
-        pageVersion: input.pageVersion,
+        contentRevision: input.contentRevision,
         noChange: false,
         summaryVi: "Cách mở đầu tự nhiên hơn.",
         operations: {
@@ -269,6 +269,189 @@ test("shows the selection bubble, previews inline AI diff, accepts, and undoes",
   await expect(first).toContainText("First block");
 });
 
+test("previews, accepts, and undoes a block DocumentProposal", async ({
+  page,
+}) => {
+  const first = page.locator(
+    "[data-blockid='00000000-0000-4000-8000-000000000101']"
+  );
+  const canonical = await page.evaluate(async () => {
+    const response = await fetch("/api/pages");
+    const { pages } = await response.json();
+    return pages.find(
+      (item: { title: string }) => item.title === "Block editor test"
+    );
+  });
+  canonical.content.content[0].content = [
+    { type: "text", text: "Improved first block" },
+  ];
+  canonical.plainText = canonical.plainText.replace(
+    "First block",
+    "Improved first block"
+  );
+  canonical.contentRevision += 1;
+
+  await page.route("**/api/ai/actions", async (route) => {
+    const input = route.request().postDataJSON();
+    if (input.scope !== "block") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        proposalId: "00000000-0000-4000-8000-000000000199",
+        baseContentRevision: input.contentRevision,
+        contentRevision: input.contentRevision,
+        noChange: false,
+        explanationVi: "Cách diễn đạt rõ ràng hơn.",
+        summaryVi: "Cách diễn đạt rõ ràng hơn.",
+        operations: {
+          baseContentRevision: input.contentRevision,
+          operations: [
+            {
+              type: "replace-text",
+              target: {
+                blockId: input.blockId,
+                expectedText: "First block",
+                from: 0,
+                to: "First block".length,
+              },
+              text: "Improved first block",
+            },
+          ],
+        },
+      }),
+    });
+  });
+  await page.route(
+    "**/api/document-proposals/00000000-0000-4000-8000-000000000199/accept",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          page: canonical,
+          proposal: {
+            operations: {
+              baseContentRevision: canonical.contentRevision - 1,
+              operations: [
+                {
+                  type: "replace-text",
+                  target: {
+                    blockId: "00000000-0000-4000-8000-000000000101",
+                    expectedText: "First block",
+                    from: 0,
+                    to: "First block".length,
+                  },
+                  text: "Improved first block",
+                },
+              ],
+            },
+          },
+        }),
+      })
+  );
+
+  await first.hover();
+  await page.getByLabel("Kéo block hoặc mở tùy chọn").click();
+  await page.getByText("Ask AI", { exact: true }).hover();
+  await page.getByText("Improve writing", { exact: true }).hover();
+  await page.getByText("Replace block", { exact: true }).click();
+  await expect(
+    page.getByText("Improved first block", { exact: true })
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Apply proposal" }).click();
+  await expect(first).toHaveText("Improved first block");
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+z" : "Control+z"
+  );
+  await expect(first).toHaveText("First block");
+});
+
+test("applies a Review Finding through its DocumentProposal", async ({
+  page,
+}) => {
+  const first = page.locator(
+    "[data-blockid='00000000-0000-4000-8000-000000000101']"
+  );
+  const canonical = await page.evaluate(async () => {
+    const response = await fetch("/api/pages");
+    const { pages } = await response.json();
+    return pages.find(
+      (item: { title: string }) => item.title === "Block editor test"
+    );
+  });
+  canonical.content.content[0].content = [
+    { type: "text", text: "Reviewed first block" },
+  ];
+  canonical.plainText = canonical.plainText.replace(
+    "First block",
+    "Reviewed first block"
+  );
+  canonical.contentRevision += 1;
+
+  await page.route("**/api/ai/review", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        findings: [
+          {
+            id: "00000000-0000-4000-8000-000000000198",
+            proposalId: "00000000-0000-4000-8000-000000000199",
+            category: "naturalness",
+            status: "pending",
+            original: "First block",
+            suggestion: "Reviewed first block",
+            explanationVi: "Tự nhiên hơn.",
+            exampleEn: "A reviewed first block.",
+            register: "neutral",
+            confidence: 0.9,
+            from: 0,
+            to: "First block".length,
+          },
+        ],
+      }),
+    })
+  );
+  await page.route(
+    "**/api/document-proposals/00000000-0000-4000-8000-000000000199/accept",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          page: canonical,
+          proposal: {
+            operations: {
+              baseContentRevision: canonical.contentRevision - 1,
+              operations: [
+                {
+                  type: "replace-text",
+                  target: {
+                    blockId: "00000000-0000-4000-8000-000000000101",
+                    expectedText: "First block",
+                    from: 0,
+                    to: "First block".length,
+                  },
+                  text: "Reviewed first block",
+                },
+              ],
+            },
+          },
+          findings: [{ id: "00000000-0000-4000-8000-000000000198" }],
+        }),
+      })
+  );
+
+  await first.click();
+  await page.keyboard.press("End");
+  await page.keyboard.type("/");
+  await page.getByText("AI Review", { exact: true }).click();
+  await expect(page.getByText("Tự nhiên hơn.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Áp dụng" }).click();
+  await expect(first).toHaveText("Reviewed first block");
+});
+
 test("restores a pending selection proposal after reloading its Page", async ({
   page,
 }) => {
@@ -281,13 +464,14 @@ test("restores a pending selection proposal after reloading its Page", async ({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        page: { id: pageId, version: 1 },
+        page: { id: pageId, contentRevision: 1 },
         proposals: [
           {
             id: "00000000-0000-4000-8000-000000000199",
             baseContentRevision: 1,
             summaryVi: "Đề xuất trước đó.",
             action: "improve",
+            sourceKind: "selection",
             status: "pending",
             operations: {
               baseContentRevision: 1,
@@ -333,13 +517,14 @@ test("offers a safe regenerate action for a stale proposal after reload", async 
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        page: { id: pageId, version: 1 },
+        page: { id: pageId, contentRevision: 1 },
         proposals: [
           {
             id: "00000000-0000-4000-8000-000000000199",
             baseContentRevision: 1,
             summaryVi: "Đề xuất cũ.",
             action: "improve",
+            sourceKind: "selection",
             status: "stale",
             operations: {
               baseContentRevision: 1,
@@ -361,7 +546,7 @@ test("offers a safe regenerate action for a stale proposal after reload", async 
       }),
     });
   });
-  await page.route("**/api/ai/transform", async (route) => {
+  await page.route("**/api/ai/actions", async (route) => {
     const input = route.request().postDataJSON();
     await route.fulfill({
       status: 200,
@@ -369,7 +554,7 @@ test("offers a safe regenerate action for a stale proposal after reload", async 
       body: JSON.stringify({
         proposalId: undefined,
         baseContentRevision: 1,
-        pageVersion: input.pageVersion,
+        contentRevision: input.contentRevision,
         noChange: true,
         summaryVi: "Đoạn này đã ổn.",
         operations: { baseContentRevision: 1, operations: [] },

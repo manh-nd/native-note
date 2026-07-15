@@ -139,7 +139,6 @@ export const pages = pgTable(
     position: integer("position").notNull().default(0),
     contentRevision: integer("content_revision").notNull().default(1),
     metadataRevision: integer("metadata_revision").notNull().default(1),
-    version: integer("version").notNull().default(1),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -179,24 +178,32 @@ export const aiRuns = pgTable("ai_runs", {
     .notNull(),
 });
 
-export const reviews = pgTable("reviews", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  pageId: uuid("page_id")
-    .notNull()
-    .references(() => pages.id, { onDelete: "cascade" }),
-  sourceRunId: uuid("source_run_id").references(() => aiRuns.id, {
-    onDelete: "set null",
-  }),
-  contentRevision: integer("content_revision"),
-  pageVersion: integer("page_version").notNull(),
-  scopeFrom: integer("scope_from"),
-  scopeTo: integer("scope_to"),
-  snapshot: text("snapshot").notNull(),
-  model: text("model").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
-});
+export const reviews = pgTable(
+  "reviews",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    pageId: uuid("page_id")
+      .notNull()
+      .references(() => pages.id, { onDelete: "cascade" }),
+    sourceRunId: uuid("source_run_id")
+      .notNull()
+      .references(() => aiRuns.id),
+    contentRevision: integer("content_revision").notNull(),
+    scopeFrom: integer("scope_from"),
+    scopeTo: integer("scope_to"),
+    snapshot: text("snapshot").notNull(),
+    model: text("model").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("reviews_page_content_revision_idx").on(
+      table.pageId,
+      table.contentRevision
+    ),
+  ]
+);
 
 export const documentProposals = pgTable(
   "document_proposals",
@@ -225,28 +232,34 @@ export const documentProposals = pgTable(
   ]
 );
 
-export const findings = pgTable("findings", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  reviewId: uuid("review_id")
-    .notNull()
-    .references(() => reviews.id, { onDelete: "cascade" }),
-  proposalId: uuid("proposal_id").references(() => documentProposals.id, {
-    onDelete: "set null",
-  }),
-  category: findingCategory("category").notNull(),
-  status: findingStatus("status").notNull().default("pending"),
-  original: text("original").notNull(),
-  suggestion: text("suggestion").notNull(),
-  explanationVi: text("explanation_vi").notNull(),
-  exampleEn: text("example_en").notNull(),
-  register: text("register").notNull().default("neutral"),
-  confidence: real("confidence").notNull(),
-  from: integer("from").notNull(),
-  to: integer("to").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
-});
+export const findings = pgTable(
+  "findings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    reviewId: uuid("review_id")
+      .notNull()
+      .references(() => reviews.id, { onDelete: "cascade" }),
+    proposalId: uuid("proposal_id").references(() => documentProposals.id, {
+      onDelete: "set null",
+    }),
+    category: findingCategory("category").notNull(),
+    status: findingStatus("status").notNull().default("pending"),
+    original: text("original").notNull(),
+    suggestion: text("suggestion").notNull(),
+    explanationVi: text("explanation_vi").notNull(),
+    exampleEn: text("example_en").notNull(),
+    register: text("register").notNull().default("neutral"),
+    confidence: real("confidence").notNull(),
+    from: integer("from").notNull(),
+    to: integer("to").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("findings_proposal_status_idx").on(table.proposalId, table.status),
+  ]
+);
 
 export const learningItems = pgTable(
   "learning_items",

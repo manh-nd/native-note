@@ -38,7 +38,6 @@ export async function migratePageStoredDocument(
       documentSchemaVersion: storedDocument.schemaVersion,
       plainText: storedDocument.plainText,
       contentRevision: sql`${pages.contentRevision} + 1`,
-      version: sql`${pages.version} + 1`,
       updatedAt: new Date(),
     })
     .where(

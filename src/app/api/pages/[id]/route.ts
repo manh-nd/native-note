@@ -22,7 +22,6 @@ const contentUpdateSchema = z
     position: z.never().optional(),
     contentRevision: z.number().int().positive(),
     metadataRevision: z.never().optional(),
-    version: z.never().optional(),
   })
   .strict()
   .refine((input) => input.content !== undefined);
@@ -33,7 +32,6 @@ const metadataUpdateSchema = z
     content: z.never().optional(),
     metadataRevision: z.number().int().positive(),
     contentRevision: z.never().optional(),
-    version: z.never().optional(),
   })
   .strict()
   .refine(
@@ -43,20 +41,7 @@ const metadataUpdateSchema = z
       input.position !== undefined
   );
 
-const legacyUpdateSchema = z
-  .object({
-    ...mutationFields,
-    version: z.number().int().positive(),
-    contentRevision: z.never().optional(),
-    metadataRevision: z.never().optional(),
-  })
-  .strict();
-
-const updateSchema = z.union([
-  contentUpdateSchema,
-  metadataUpdateSchema,
-  legacyUpdateSchema,
-]);
+const updateSchema = z.union([contentUpdateSchema, metadataUpdateSchema]);
 
 export async function PATCH(
   request: Request,
@@ -78,10 +63,13 @@ export async function PATCH(
               condition: eq(pages.metadataRevision, input.metadataRevision),
               conflictCode: "METADATA_REVISION_CONFLICT",
             }
-          : {
-              condition: eq(pages.version, input.version!),
-              conflictCode: "VERSION_CONFLICT",
-            };
+          : null;
+    if (!revisionStrategy)
+      throw new ApiError(
+        400,
+        "Thiếu revision để cập nhật trang.",
+        "INVALID_INPUT"
+      );
     const storedDocument =
       input.content === undefined
         ? undefined
@@ -129,7 +117,6 @@ export async function PATCH(
         ...(changesMetadata
           ? { metadataRevision: sql`${pages.metadataRevision} + 1` }
           : {}),
-        version: sql`${pages.version} + 1`,
         updatedAt: new Date(),
       })
       .where(and(eq(pages.id, current.id), revisionStrategy.condition))
