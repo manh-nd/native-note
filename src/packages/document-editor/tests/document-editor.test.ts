@@ -6,6 +6,7 @@ import {
   createDocumentEditorSession,
   createDocumentEditorExtensions,
   createPortableExcerpt,
+  createDocumentTextIndex,
   prepareDocumentContent,
   type DocumentOperationBatch,
 } from "../index";
@@ -58,6 +59,32 @@ const source = {
 };
 
 describe("document-editor public interface", () => {
+  it("indexes repeated text by its stable block identity and block-relative offsets", () => {
+    const document = prepareDocumentContent({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          attrs: { blockId: "first" },
+          content: [{ type: "text", text: "Same text" }],
+        },
+        {
+          type: "paragraph",
+          attrs: { blockId: "second" },
+          content: [{ type: "text", text: "Same text" }],
+        },
+      ],
+    });
+
+    expect(createDocumentTextIndex(document.content)).toEqual({
+      text: "Same text\nSame text",
+      blocks: [
+        { blockId: "first", text: "Same text", from: 0, to: 9 },
+        { blockId: "second", text: "Same text", from: 10, to: 19 },
+      ],
+    });
+  });
+
   it("prepares portable excerpts with identities, attributes, and nesting paths", () => {
     const document = prepareDocumentContent(source);
     expect(createPortableExcerpt(document.content)).toEqual(

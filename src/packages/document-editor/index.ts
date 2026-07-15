@@ -9,6 +9,7 @@ export {
 export {
   applyDocumentOperations,
   applyDocumentOperationsToEditor,
+  createDocumentTextIndex,
   createDocumentEditorSession,
   createPortableExcerpt,
   DocumentOperationError,
@@ -16,6 +17,8 @@ export {
   type AppliedDocumentOperations,
   type DocumentOperation,
   type DocumentOperationBatch,
+  type DocumentTextBlock,
+  type DocumentTextIndex,
   type DocumentTarget,
   type PortableExcerpt,
   type TextReplacementTarget,

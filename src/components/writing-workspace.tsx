@@ -19,7 +19,10 @@ import {
   X,
 } from "lucide-react";
 import type { Editor, JSONContent } from "@tiptap/core";
-import type { DocumentOperationBatch } from "@/packages/document-editor";
+import {
+  applyDocumentOperationsToEditor,
+  type DocumentOperationBatch,
+} from "@/packages/document-editor";
 import type { PageDocumentProposal } from "@/packages/document-proposals";
 import { Button } from "@/components/ui/button";
 import type { pages } from "@/db/schema";
@@ -1130,33 +1133,39 @@ export function WritingWorkspace({
     }, 0);
   }
 
-  function findEditorRange(original: string) {
-    if (!editor) return null;
-    for (let pos = 1; pos <= editor.state.doc.content.size; pos += 1) {
-      const text = editor.state.doc.textBetween(
-        pos,
-        Math.min(editor.state.doc.content.size, pos + original.length + 1),
-        "\n"
-      );
-      if (text.startsWith(original))
-        return { from: pos, to: pos + original.length };
-    }
-    return null;
-  }
   async function handleFinding(
     finding: Finding,
     action: "apply" | "dismiss" | "save"
   ) {
     try {
-      const result = await api<{ suggestion: string }>(
-        `/api/findings/${finding.id}/${action}`,
-        { method: "POST" }
-      );
+      const currentPage = action === "apply" ? await flushEditor() : undefined;
+      if (action === "apply" && (!editor || !currentPage)) return;
+      if (action === "apply") editor!.setEditable(false);
+      const result = await api<{
+        page?: PageRow;
+        proposal?: { operations: DocumentOperationBatch };
+      }>(`/api/findings/${finding.id}/${action}`, { method: "POST" });
       if (action === "apply" && editor) {
-        const range = findEditorRange(finding.original);
-        if (!range)
-          throw new Error("Không còn tìm thấy đoạn gốc trong editor.");
-        editor.chain().focus().insertContentAt(range, result.suggestion).run();
+        if (!result.page || !result.proposal)
+          throw new Error("Máy chủ không trả về đề xuất canonical.");
+        try {
+          ignoreCanonicalEditorUpdate.current = true;
+          applyDocumentOperationsToEditor(
+            editor,
+            result.proposal.operations,
+            currentPage!.contentRevision,
+            "server-canonical-proposal"
+          );
+          updatePage(result.page, "full");
+          editor.commands.focus();
+        } catch {
+          ignoreCanonicalEditorUpdate.current = false;
+          editor.commands.setContent(result.page.content as JSONContent, {
+            emitUpdate: false,
+          });
+          updatePage(result.page, "full");
+          setError("Đã tải lại nội dung canonical từ máy chủ.");
+        }
       }
       setFindings((current) =>
         current.filter((item) => item.id !== finding.id)
@@ -1165,6 +1174,8 @@ export function WritingWorkspace({
       setError(
         cause instanceof Error ? cause.message : "Không thể xử lý góp ý."
       );
+    } finally {
+      if (action === "apply" && editor) editor.setEditable(true);
     }
   }
   function applyTransform(mode: "replace" | "insert") {

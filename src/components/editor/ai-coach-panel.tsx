@@ -16,6 +16,7 @@ export type Finding = {
   confidence: number;
   from: number;
   to: number;
+  proposalId: string | null;
 };
 export type AiTransform = {
   result: string;
@@ -137,10 +138,12 @@ export function AiCoachPanel({
               <strong>Ví dụ:</strong> {finding.exampleEn}
             </p>
             <div className="card-actions">
-              <Button size="sm" onClick={() => onFinding(finding, "apply")}>
-                <Check data-icon="inline-start" />
-                Áp dụng
-              </Button>
+              {finding.proposalId && (
+                <Button size="sm" onClick={() => onFinding(finding, "apply")}>
+                  <Check data-icon="inline-start" />
+                  Áp dụng
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"

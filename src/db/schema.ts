@@ -41,7 +41,10 @@ export const practiceVerdict = pgEnum("practice_verdict", [
   "incorrect",
 ]);
 export const sessionKind = pgEnum("practice_kind", ["writing", "live"]);
-export const aiRunSourceKind = pgEnum("ai_run_source_kind", ["selection"]);
+export const aiRunSourceKind = pgEnum("ai_run_source_kind", [
+  "selection",
+  "review",
+]);
 export const aiRunStatus = pgEnum("ai_run_status", ["completed", "failed"]);
 export const documentProposalStatus = pgEnum("document_proposal_status", [
   "pending",
@@ -153,21 +156,6 @@ export const pages = pgTable(
   ]
 );
 
-export const reviews = pgTable("reviews", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  pageId: uuid("page_id")
-    .notNull()
-    .references(() => pages.id, { onDelete: "cascade" }),
-  pageVersion: integer("page_version").notNull(),
-  scopeFrom: integer("scope_from"),
-  scopeTo: integer("scope_to"),
-  snapshot: text("snapshot").notNull(),
-  model: text("model").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
-});
-
 export const aiRuns = pgTable("ai_runs", {
   id: uuid("id").defaultRandom().primaryKey(),
   pageId: uuid("page_id")
@@ -186,6 +174,25 @@ export const aiRuns = pgTable("ai_runs", {
     .defaultNow()
     .notNull(),
   completedAt: timestamp("completed_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
+export const reviews = pgTable("reviews", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  pageId: uuid("page_id")
+    .notNull()
+    .references(() => pages.id, { onDelete: "cascade" }),
+  sourceRunId: uuid("source_run_id").references(() => aiRuns.id, {
+    onDelete: "set null",
+  }),
+  contentRevision: integer("content_revision"),
+  pageVersion: integer("page_version").notNull(),
+  scopeFrom: integer("scope_from"),
+  scopeTo: integer("scope_to"),
+  snapshot: text("snapshot").notNull(),
+  model: text("model").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
 });
@@ -222,6 +229,9 @@ export const findings = pgTable("findings", {
   reviewId: uuid("review_id")
     .notNull()
     .references(() => reviews.id, { onDelete: "cascade" }),
+  proposalId: uuid("proposal_id").references(() => documentProposals.id, {
+    onDelete: "set null",
+  }),
   category: findingCategory("category").notNull(),
   status: findingStatus("status").notNull().default("pending"),
   original: text("original").notNull(),

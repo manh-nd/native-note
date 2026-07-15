@@ -63,6 +63,18 @@ export type PortableExcerpt = {
   nestingPath: string[];
 };
 
+export type DocumentTextBlock = {
+  blockId: string;
+  text: string;
+  from: number;
+  to: number;
+};
+
+export type DocumentTextIndex = {
+  text: string;
+  blocks: DocumentTextBlock[];
+};
+
 export type AppliedDocumentOperations = {
   content: DocumentContent;
   plainText: string;
@@ -348,6 +360,28 @@ export function createPortableExcerpt(content: unknown): PortableExcerpt[] {
   };
   document.forEach((node) => walk(node, []));
   return excerpts;
+}
+
+export function createDocumentTextIndex(content: unknown): DocumentTextIndex {
+  const document = toProseMirrorDocument(content);
+  const blocks: DocumentTextBlock[] = [];
+  let text = "";
+  document.descendants((node) => {
+    if (!node.isTextblock) return true;
+    const id = blockId(node);
+    if (!id) return false;
+    const blockText = node.textBetween(0, node.content.size, "\n", "\ufffc");
+    if (blocks.length) text += "\n";
+    const from = text.length;
+    text += blockText;
+    blocks.push({ blockId: id, text: blockText, from, to: text.length });
+    return false;
+  });
+  while (blocks.at(-1)?.text === "") {
+    const removed = blocks.pop()!;
+    text = text.slice(0, removed.from - (blocks.length ? 1 : 0));
+  }
+  return { text, blocks };
 }
 
 export function createDocumentEditorSession(content: unknown) {

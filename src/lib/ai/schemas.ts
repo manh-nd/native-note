@@ -1,7 +1,15 @@
 import { z } from "zod";
 
-export const categorySchema = z.enum(["grammar", "word_choice", "collocation", "naturalness", "register", "clarity"]);
+export const categorySchema = z.enum([
+  "grammar",
+  "word_choice",
+  "collocation",
+  "naturalness",
+  "register",
+  "clarity",
+]);
 export const findingSchema = z.object({
+  blockId: z.string().uuid(),
   category: categorySchema,
   original: z.string().min(1).max(500),
   suggestion: z.string().min(1).max(1000),
@@ -12,7 +20,9 @@ export const findingSchema = z.object({
   from: z.number().int().nonnegative(),
   to: z.number().int().positive(),
 });
-export const reviewResponseSchema = z.object({ findings: z.array(findingSchema).max(30) });
+export const reviewResponseSchema = z.object({
+  findings: z.array(findingSchema).max(30),
+});
 
 export const transformResponseSchema = z.object({
   result: z.string().min(1).max(5000),
@@ -22,7 +32,14 @@ export const transformResponseSchema = z.object({
 
 export const selectionTransformSegmentSchema = z.object({
   id: z.string().min(1).max(120),
-  result: z.string().min(1).max(5000).refine((value) => !/[\r\n]/.test(value), "Mỗi kết quả phải nằm trên một dòng."),
+  result: z
+    .string()
+    .min(1)
+    .max(5000)
+    .refine(
+      (value) => !/[\r\n]/.test(value),
+      "Mỗi kết quả phải nằm trên một dòng."
+    ),
   category: categorySchema,
   explanationVi: z.string().min(1).max(1000),
   exampleEn: z.string().min(1).max(1000),
@@ -37,13 +54,15 @@ export const selectionTransformResponseSchema = z.object({
 
 export function selectionResponseMatchesIds(
   response: z.infer<typeof selectionTransformResponseSchema>,
-  expectedIds: string[],
+  expectedIds: string[]
 ) {
   const actual = response.segments.map((segment) => segment.id);
-  return actual.length === expectedIds.length
-    && new Set(actual).size === actual.length
-    && actual.every((id) => expectedIds.includes(id))
-    && expectedIds.every((id) => actual.includes(id));
+  return (
+    actual.length === expectedIds.length &&
+    new Set(actual).size === actual.length &&
+    actual.every((id) => expectedIds.includes(id)) &&
+    expectedIds.every((id) => actual.includes(id))
+  );
 }
 
 export const practicePromptSchema = z.object({
@@ -60,10 +79,14 @@ export const attemptAssessmentSchema = z.object({
 
 export const liveAssessmentSchema = z.object({
   summaryVi: z.string().min(1).max(1500),
-  items: z.array(z.object({
-    itemId: z.string().uuid(),
-    verdict: z.enum(["correct", "partially_correct", "incorrect"]),
-    evidence: z.string().max(1000),
-    feedbackVi: z.string().max(1000),
-  })).max(5),
+  items: z
+    .array(
+      z.object({
+        itemId: z.string().uuid(),
+        verdict: z.enum(["correct", "partially_correct", "incorrect"]),
+        evidence: z.string().max(1000),
+        feedbackVi: z.string().max(1000),
+      })
+    )
+    .max(5),
 });

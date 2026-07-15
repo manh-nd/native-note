@@ -1,9 +1,18 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { aiRuns, documentProposals, pages, workspaces } from "@/db/schema";
+import {
+  aiRuns,
+  documentProposals,
+  findings,
+  learningItems,
+  pages,
+  reviews,
+  workspaces,
+} from "@/db/schema";
 import { ApiError } from "@/lib/api";
 import {
   applyDocumentOperations,
+  createDocumentTextIndex,
   createPortableExcerpt,
   type DocumentOperationBatch,
 } from "@/packages/document-editor";
@@ -21,6 +30,25 @@ type Page = typeof pages.$inferSelect;
 type Proposal = typeof documentProposals.$inferSelect;
 
 export type PageDocumentProposal = Proposal & { action: string };
+
+export type ReviewFindingDraft = {
+  blockId: string;
+  category:
+    | "grammar"
+    | "word_choice"
+    | "collocation"
+    | "naturalness"
+    | "register"
+    | "clarity";
+  original: string;
+  suggestion: string;
+  explanationVi: string;
+  exampleEn: string;
+  register: string;
+  confidence: number;
+  from: number;
+  to: number;
+};
 
 function selectionOperations(
   page: Page,
@@ -126,6 +154,139 @@ export async function createSelectionDocumentProposal({
   });
 }
 
+export async function createReviewDocumentProposals({
+  page,
+  userId,
+  model,
+  snapshot,
+  findings: reviewFindings,
+}: {
+  page: Page;
+  userId: string;
+  model: string;
+  snapshot: string;
+  findings: ReviewFindingDraft[];
+}) {
+  return db.transaction(async (tx) => {
+    const [currentPage] = await tx
+      .select()
+      .from(pages)
+      .where(eq(pages.id, page.id))
+      .for("update")
+      .limit(1);
+    if (!currentPage || currentPage.contentRevision !== page.contentRevision) {
+      throw new ApiError(
+        409,
+        "Nội dung đã thay đổi. Hãy chạy lại review.",
+        "STALE_REVIEW"
+      );
+    }
+    const textIndex = createDocumentTextIndex(currentPage.content);
+    if (textIndex.text !== snapshot) {
+      throw new ApiError(
+        409,
+        "Nội dung đã thay đổi. Hãy chạy lại review.",
+        "STALE_REVIEW"
+      );
+    }
+    const blocks = new Map(
+      textIndex.blocks.map((block) => [block.blockId, block])
+    );
+    for (const finding of reviewFindings) {
+      const block = blocks.get(finding.blockId);
+      if (
+        !block ||
+        finding.from < 0 ||
+        finding.to < finding.from ||
+        block.text.slice(finding.from, finding.to) !== finding.original
+      ) {
+        throw new ApiError(
+          502,
+          "AI trả về vị trí góp ý không hợp lệ.",
+          "INVALID_AI_RESPONSE"
+        );
+      }
+    }
+    const [run] = await tx
+      .insert(aiRuns)
+      .values({
+        pageId: currentPage.id,
+        creatorId: userId,
+        sourceKind: "review",
+        action: "review",
+        model,
+        status: "completed",
+        inputSnapshot: snapshot,
+        outputSnapshot: { findings: reviewFindings },
+      })
+      .returning();
+    const [review] = await tx
+      .insert(reviews)
+      .values({
+        pageId: currentPage.id,
+        sourceRunId: run.id,
+        contentRevision: currentPage.contentRevision,
+        pageVersion: currentPage.version,
+        scopeFrom: 0,
+        scopeTo: snapshot.length,
+        snapshot,
+        model,
+      })
+      .returning();
+
+    const storedFindings = [];
+    for (const finding of reviewFindings) {
+      const block = blocks.get(finding.blockId)!;
+      const [proposal] =
+        finding.original === finding.suggestion
+          ? []
+          : await tx
+              .insert(documentProposals)
+              .values({
+                pageId: currentPage.id,
+                sourceRunId: run.id,
+                creatorId: userId,
+                baseContentRevision: currentPage.contentRevision,
+                operations: {
+                  baseContentRevision: currentPage.contentRevision,
+                  operations: [
+                    {
+                      type: "replace-text",
+                      target: {
+                        blockId: finding.blockId,
+                        expectedText: block.text,
+                        from: finding.from,
+                        to: finding.to,
+                      },
+                      text: finding.suggestion,
+                    },
+                  ],
+                },
+                summaryVi: finding.explanationVi,
+              })
+              .returning();
+      const [stored] = await tx
+        .insert(findings)
+        .values({
+          reviewId: review.id,
+          proposalId: proposal?.id,
+          category: finding.category,
+          original: finding.original,
+          suggestion: finding.suggestion,
+          explanationVi: finding.explanationVi,
+          exampleEn: finding.exampleEn,
+          register: finding.register,
+          confidence: finding.confidence,
+          from: block.from + finding.from,
+          to: block.from + finding.to,
+        })
+        .returning();
+      storedFindings.push(stored);
+    }
+    return storedFindings;
+  });
+}
+
 async function ownedProposal(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   userId: string,
@@ -181,7 +342,91 @@ async function markProposalStale(
       "Đề xuất vừa được xử lý ở nơi khác.",
       "PROPOSAL_DECIDED"
     );
+  await tx
+    .update(findings)
+    .set({ status: "stale" })
+    .where(
+      and(eq(findings.proposalId, proposalId), eq(findings.status, "pending"))
+    );
   return stale;
+}
+
+async function acceptLinkedFindings(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  userId: string,
+  proposalId: string
+) {
+  const linked = await tx
+    .select({ finding: findings, review: reviews })
+    .from(findings)
+    .innerJoin(reviews, eq(findings.reviewId, reviews.id))
+    .where(eq(findings.proposalId, proposalId))
+    .for("update", { of: [findings] });
+  if (!linked.length) return;
+  if (linked.some(({ finding }) => finding.status !== "pending")) {
+    throw new ApiError(409, "Góp ý không còn chờ xử lý.", "FINDING_DECIDED");
+  }
+  const ids = linked.map(({ finding }) => finding.id);
+  const accepted = await tx
+    .update(findings)
+    .set({ status: "applied" })
+    .where(and(inArray(findings.id, ids), eq(findings.status, "pending")))
+    .returning();
+  if (accepted.length !== ids.length) {
+    throw new ApiError(
+      409,
+      "Góp ý vừa được xử lý ở nơi khác.",
+      "FINDING_DECIDED"
+    );
+  }
+  const reviewByFinding = new Map(
+    linked.map(({ finding, review }) => [finding.id, review])
+  );
+  await tx
+    .insert(learningItems)
+    .values(
+      accepted.map((finding) => ({
+        userId,
+        findingId: finding.id,
+        category: finding.category,
+        originalPattern: finding.original,
+        targetExpression: finding.suggestion,
+        explanationVi: finding.explanationVi,
+        sourceContext: reviewByFinding.get(finding.id)!.snapshot.slice(0, 1500),
+      }))
+    )
+    .onConflictDoNothing({ target: learningItems.findingId });
+}
+
+async function rejectLinkedFindings(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  proposalId: string
+) {
+  await tx
+    .update(findings)
+    .set({ status: "dismissed" })
+    .where(
+      and(eq(findings.proposalId, proposalId), eq(findings.status, "pending"))
+    );
+}
+
+async function ownedFinding(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  userId: string,
+  findingId: string
+) {
+  const [row] = await tx
+    .select({ finding: findings, proposal: documentProposals, review: reviews })
+    .from(findings)
+    .innerJoin(reviews, eq(findings.reviewId, reviews.id))
+    .innerJoin(pages, eq(reviews.pageId, pages.id))
+    .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
+    .leftJoin(documentProposals, eq(findings.proposalId, documentProposals.id))
+    .where(and(eq(findings.id, findingId), eq(workspaces.userId, userId)))
+    .for("update", { of: [findings, documentProposals] })
+    .limit(1);
+  if (!row) throw new ApiError(404, "Không tìm thấy góp ý.", "NOT_FOUND");
+  return row;
 }
 
 export async function loadPageDocumentProposals(
@@ -287,6 +532,7 @@ export async function acceptDocumentProposal(
         "Nội dung đã thay đổi.",
         "CONTENT_REVISION_CONFLICT"
       );
+    await acceptLinkedFindings(tx, userId, proposal.id);
     const [accepted] = await tx
       .update(documentProposals)
       .set({ status: "accepted", decidedAt: now })
@@ -343,6 +589,112 @@ export async function rejectDocumentProposal(
         "Đề xuất vừa được xử lý ở nơi khác.",
         "PROPOSAL_DECIDED"
       );
+    await rejectLinkedFindings(tx, proposal.id);
     return { proposal: rejected, idempotent: false };
+  });
+}
+
+export async function applyFinding(userId: string, findingId: string) {
+  const proposalId = await db.transaction(async (tx) => {
+    const { finding, proposal } = await ownedFinding(tx, userId, findingId);
+    if (finding.status !== "pending") {
+      throw new ApiError(409, "Góp ý này đã được xử lý.", "FINDING_DECIDED");
+    }
+    if (!proposal) {
+      throw new ApiError(
+        409,
+        "Góp ý cũ không có đề xuất để áp dụng. Hãy chạy lại review.",
+        "LEGACY_FINDING"
+      );
+    }
+    return proposal.id;
+  });
+  return acceptDocumentProposal(userId, proposalId);
+}
+
+export async function saveFinding(userId: string, findingId: string) {
+  return db.transaction(async (tx) => {
+    const { finding, proposal, review } = await ownedFinding(
+      tx,
+      userId,
+      findingId
+    );
+    if (finding.status === "saved")
+      return { finding, proposal, idempotent: true };
+    if (finding.status !== "pending") {
+      throw new ApiError(409, "Góp ý này đã được xử lý.", "FINDING_DECIDED");
+    }
+    const [saved] = await tx
+      .update(findings)
+      .set({ status: "saved" })
+      .where(and(eq(findings.id, finding.id), eq(findings.status, "pending")))
+      .returning();
+    if (!saved) {
+      throw new ApiError(
+        409,
+        "Góp ý vừa được xử lý ở nơi khác.",
+        "FINDING_DECIDED"
+      );
+    }
+    await tx
+      .insert(learningItems)
+      .values({
+        userId,
+        findingId: saved.id,
+        category: saved.category,
+        originalPattern: saved.original,
+        targetExpression: saved.suggestion,
+        explanationVi: saved.explanationVi,
+        sourceContext: review.snapshot.slice(0, 1500),
+      })
+      .onConflictDoNothing({ target: learningItems.findingId });
+    if (proposal?.status === "pending") {
+      await tx
+        .update(documentProposals)
+        .set({ status: "rejected", decidedAt: new Date() })
+        .where(
+          and(
+            eq(documentProposals.id, proposal.id),
+            eq(documentProposals.status, "pending")
+          )
+        );
+    }
+    return { finding: saved, proposal, idempotent: false };
+  });
+}
+
+export async function dismissFinding(userId: string, findingId: string) {
+  return db.transaction(async (tx) => {
+    const { finding, proposal } = await ownedFinding(tx, userId, findingId);
+    if (finding.status === "dismissed") {
+      return { finding, proposal, idempotent: true };
+    }
+    if (finding.status !== "pending") {
+      throw new ApiError(409, "Góp ý này đã được xử lý.", "FINDING_DECIDED");
+    }
+    const [dismissed] = await tx
+      .update(findings)
+      .set({ status: "dismissed" })
+      .where(and(eq(findings.id, finding.id), eq(findings.status, "pending")))
+      .returning();
+    if (!dismissed) {
+      throw new ApiError(
+        409,
+        "Góp ý vừa được xử lý ở nơi khác.",
+        "FINDING_DECIDED"
+      );
+    }
+    if (proposal?.status === "pending") {
+      await tx
+        .update(documentProposals)
+        .set({ status: "rejected", decidedAt: new Date() })
+        .where(
+          and(
+            eq(documentProposals.id, proposal.id),
+            eq(documentProposals.status, "pending")
+          )
+        );
+    }
+    return { finding: dismissed, proposal, idempotent: false };
   });
 }
