@@ -2,10 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
 import {
   Check,
   ChevronRight,
@@ -35,11 +32,8 @@ import { WorkspaceSidebar } from "@/components/workspace-sidebar";
 import { PracticeView } from "./practice-view";
 import { LiveCoach } from "./live-coach";
 import {
-  BlockAppearance,
   BlockDeepLinkHighlight,
-  BlockIdentity,
-  CustomCodeBlockLowlight,
-  WritingMarks,
+  identityExtensions,
 } from "./editor/extensions";
 import { BlockControls, type AiAction } from "./editor/block-controls";
 import {
@@ -316,15 +310,9 @@ export function WritingWorkspace({
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
-      StarterKit.configure({ link: false, underline: false, codeBlock: false }),
+      ...identityExtensions,
       Placeholder.configure({ placeholder: "Bắt đầu viết… Gõ / để mở lệnh" }),
-      TaskList,
-      TaskItem.configure({ nested: true }),
-      BlockIdentity,
-      BlockAppearance,
-      CustomCodeBlockLowlight,
       BlockDeepLinkHighlight,
-      ...WritingMarks,
       SelectionAiPreview,
     ],
     content: activePage.content as JSONContent,

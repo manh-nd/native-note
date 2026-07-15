@@ -4,16 +4,13 @@ import { ReactNodeViewRenderer } from "@tiptap/react";
 import { CodeBlockComponent } from "./CodeBlock";
 import {
   BLOCK_ID_ATTRIBUTE,
-  BlockAppearance,
-  BlockIdentity,
-  documentExtensions,
-  StoredDocumentCodeBlock,
-  WritingMarks,
-} from "@/packages/documents";
+  createDocumentEditorExtensions,
+  DocumentCodeBlock,
+} from "@/packages/document-editor";
 
-export { BLOCK_ID_ATTRIBUTE, BlockAppearance, BlockIdentity, WritingMarks };
+export { BLOCK_ID_ATTRIBUTE };
 
-export const CustomCodeBlockLowlight = StoredDocumentCodeBlock.extend({
+export const CustomCodeBlockLowlight = DocumentCodeBlock.extend({
   addNodeView() {
     return ReactNodeViewRenderer(CodeBlockComponent);
   },
@@ -84,7 +81,7 @@ export const BlockDeepLinkHighlight = Extension.create({
 });
 
 export const identityExtensions = [
-  ...documentExtensions(CustomCodeBlockLowlight),
+  ...createDocumentEditorExtensions(CustomCodeBlockLowlight),
 ];
 
 export function addBlockIds(content: JSONContent) {

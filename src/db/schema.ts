@@ -12,7 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { JSONContent } from "@tiptap/core";
+import type { DocumentContent } from "@/packages/documents";
 
 export const findingCategory = pgEnum("finding_category", [
   "grammar",
@@ -118,7 +118,7 @@ export const pages = pgTable(
       .references(() => workspaces.id, { onDelete: "cascade" }),
     parentId: uuid("parent_id"),
     title: text("title").notNull().default("Không có tiêu đề"),
-    content: jsonb("content").$type<JSONContent>().notNull(),
+    content: jsonb("content").$type<DocumentContent>().notNull(),
     documentSchemaVersion: integer("document_schema_version")
       .notNull()
       .default(1),

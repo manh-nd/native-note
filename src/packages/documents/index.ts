@@ -1,13 +1,4 @@
 export {
-  BLOCK_ID_ATTRIBUTE,
-  BLOCK_TYPES,
-  BlockAppearance,
-  BlockIdentity,
-  documentExtensions,
-  StoredDocumentCodeBlock,
-  WritingMarks,
-} from "./lib/schema";
-export {
   CURRENT_STORED_DOCUMENT_VERSION,
   createEmptyStoredDocument,
   createStoredDocument,
@@ -16,3 +7,4 @@ export {
   type StoredDocument,
   type StoredDocumentInput,
 } from "./lib/stored-document";
+export type { DocumentContent } from "@/packages/document-editor";
