@@ -91,6 +91,8 @@ type Props = {
   onReject: () => void;
   onAbort: () => void;
   onRegenerate: () => void;
+  skills?: Array<{ pageId: string; title: string }>;
+  onRunSkill?: (pageId: string, range: { from: number; to: number }) => void;
 };
 
 const textColors = [
@@ -162,6 +164,8 @@ export function SelectionBubbleMenu({
   onReject,
   onAbort,
   onRegenerate,
+  skills = [],
+  onRunSkill,
 }: Props) {
   const [customMode, setCustomMode] = useState(false);
   const [customPrompt, setCustomPrompt] = useState("");
@@ -645,6 +649,26 @@ export function SelectionBubbleMenu({
                   Suggest phrases
                 </DropdownMenuItem>
               </DropdownMenuGroup>
+              {skills.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>Skills</DropdownMenuLabel>
+                    {skills.map((skill) => (
+                      <DropdownMenuItem
+                        key={skill.pageId}
+                        onClick={() => {
+                          const range = preservedSelection.current;
+                          if (range) onRunSkill?.(skill.pageId, range);
+                        }}
+                      >
+                        <Sparkles />
+                        {skill.title}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuGroup>
+                </>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
                 <DropdownMenuItem onClick={() => setCustomMode(true)}>

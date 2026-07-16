@@ -26,6 +26,7 @@ import {
 import type { PageDocumentProposal } from "@/packages/document-proposals";
 import { Button } from "@/components/ui/button";
 import type { pages, skills, skillVersions } from "@/db/schema";
+import type { MenuSkill } from "@/packages/skills";
 import { Toaster } from "@/components/ui/sonner";
 import {
   SidebarInset,
@@ -50,7 +51,12 @@ import {
   SlashCommandMenu,
   type EditorCommand,
 } from "./editor/slash-command-menu";
-import { blockSnapshot, isAiBlockResultStale } from "./editor/block-utils";
+import {
+  blockSnapshot,
+  editorSkillRange,
+  isAiBlockResultStale,
+  isSupportedSkillBlock,
+} from "./editor/block-utils";
 import {
   SelectionBubbleMenu,
   type SelectionAiAction,
@@ -271,12 +277,14 @@ function revealHashBlock(editor: Editor, attempt = 0) {
 export function WritingWorkspace({
   initialPages,
   initialSkills,
+  initialMenuSkills,
   user,
   initialActivePageId,
   defaultSidebarOpen = true,
 }: {
   initialPages: PageRow[];
   initialSkills: SkillRow[];
+  initialMenuSkills: MenuSkill[];
   user: User;
   initialActivePageId?: string;
   defaultSidebarOpen?: boolean;
@@ -290,6 +298,7 @@ export function WritingWorkspace({
   const [activeSkillVersions, setActiveSkillVersions] = useState<
     SkillVersionRow[]
   >([]);
+  const [menuSkills, setMenuSkills] = useState(initialMenuSkills);
   const [activeId, setActiveId] = useState(
     initialPages.some((page) => page.id === initialActivePageId)
       ? initialActivePageId!
@@ -724,7 +733,8 @@ export function WritingWorkspace({
       action: SelectionAiAction,
       tone?: SelectionTone,
       instruction?: string,
-      range?: { from: number; to: number }
+      range?: { from: number; to: number },
+      skill?: { pageId: string; scope: "selection" | "block" | "page" }
     ) => {
       if (!editor || !activePage) return;
       const sourceRange =
@@ -776,29 +786,36 @@ export function WritingWorkspace({
           instruction,
         };
         selectionContextRef.current = context;
-        const result = await api<SelectionAiResult>("/api/ai/actions", {
-          method: "POST",
-          signal: controller.signal,
-          body: JSON.stringify({
-            pageId: savedPage.id,
-            scope: "selection",
-            action,
-            tone,
-            instruction,
-            contentRevision: savedPage.contentRevision,
-            snapshot: selectionSnapshot(sources),
-            segments: sources.map((segment) => ({
-              id: segment.id,
-              from: segment.plainFrom,
-              to: segment.plainTo,
-              text: segment.text,
-              nodeType: segment.nodeType,
-              blockId: segment.blockId,
-              blockFrom: segment.blockFrom,
-              blockTo: segment.blockTo,
-            })),
-          }),
-        });
+        const result = await api<SelectionAiResult>(
+          skill ? "/api/ai/skills/selection" : "/api/ai/actions",
+          {
+            method: "POST",
+            signal: controller.signal,
+            body: JSON.stringify({
+              pageId: savedPage.id,
+              scope: skill?.scope ?? "selection",
+              ...(skill && {
+                skillPageId: skill.pageId,
+                contextSummary: `Page: ${savedPage.title}; content revision: ${savedPage.contentRevision}; ${sources.length} block segment(s).`,
+              }),
+              action,
+              tone,
+              instruction,
+              contentRevision: savedPage.contentRevision,
+              snapshot: selectionSnapshot(sources),
+              segments: sources.map((segment) => ({
+                id: segment.id,
+                from: segment.plainFrom,
+                to: segment.plainTo,
+                text: segment.text,
+                nodeType: segment.nodeType,
+                blockId: segment.blockId,
+                blockFrom: segment.blockFrom,
+                blockTo: segment.blockTo,
+              })),
+            }),
+          }
+        );
         const livePage = pagesRef.current.find(
           (page) => page.id === savedPage.id
         );
@@ -849,6 +866,30 @@ export function WritingWorkspace({
       }
     },
     [activePage, editor, flushEditor, updateSelectionAi]
+  );
+
+  const runPublishedSkill = useCallback(
+    (
+      skillPageId: string,
+      scope: "selection" | "block" | "page",
+      range?: { from: number; to: number }
+    ) => {
+      if (editor && range) editor.commands.setTextSelection(range);
+      void runSelectionTransform("custom", undefined, undefined, range, {
+        pageId: skillPageId,
+        scope,
+      });
+    },
+    [editor, runSelectionTransform]
+  );
+
+  const runBlockSkill = useCallback(
+    (skillPageId: string, blockId: string) => {
+      if (!editor) return;
+      const range = editorSkillRange(editor, "block", blockId) ?? undefined;
+      if (range) runPublishedSkill(skillPageId, "block", range);
+    },
+    [editor, runPublishedSkill]
   );
 
   const regenerateSelectionTransform = useCallback(() => {
@@ -1075,11 +1116,41 @@ export function WritingWorkspace({
     review,
     practice: () => setView("practice"),
   };
-  const commands: RunnableEditorCommand[] = SLASH_COMMANDS.map((command) => ({
-    ...command,
-    run: commandRunners[command.key],
-  }));
-  const visibleSlashCommands = filterSlashCommands(SLASH_COMMANDS, slash.query);
+  const compatibleSlashSkills = menuSkills.filter((skill) => {
+    if (!editor || skill.policy.inputScope === "page") return true;
+    if (skill.policy.inputScope === "selection")
+      return (
+        !editor.state.selection.empty && selectionSegments(editor).length > 0
+      );
+    const range = editorSkillRange(editor, "block");
+    if (!range) return false;
+    const node = editor.state.selection.$from.parent;
+    return isSupportedSkillBlock(node);
+  });
+  const skillCommands: RunnableEditorCommand[] = compatibleSlashSkills.map(
+    (skill) => ({
+      key: `skill-${skill.pageId}`,
+      label: skill.title,
+      hint: `Skill · ${skill.policy.inputScope}`,
+      icon: <Sparkles className="size-4" />,
+      run: () => {
+        if (!editor) return;
+        const scope = skill.policy.inputScope;
+        const range = editorSkillRange(editor, scope) ?? undefined;
+        if (!range)
+          return setError("Hãy chọn nội dung trước khi chạy Skill này.");
+        runPublishedSkill(skill.pageId, scope, range);
+      },
+    })
+  );
+  const commands: RunnableEditorCommand[] = [
+    ...SLASH_COMMANDS.map((command) => ({
+      ...command,
+      run: commandRunners[command.key],
+    })),
+    ...skillCommands,
+  ];
+  const visibleSlashCommands = filterSlashCommands(commands, slash.query);
   useEffect(() => {
     slashCommandsRef.current = commands;
   }, [commands]);
@@ -1312,6 +1383,22 @@ export function WritingWorkspace({
           (left, right) => right.version - left.version
         );
       });
+      setMenuSkills((current) => [
+        ...current.filter((skill) => skill.id !== result.skill.id),
+        ...(!result.version.policy.showInEditorMenu ||
+        result.version.policy.status === "disabled"
+          ? []
+          : [
+              {
+                id: result.skill.id,
+                pageId: result.skill.pageId,
+                title: activePage.title,
+                activeVersionId: result.skill.activeVersionId,
+                versionId: result.version.id,
+                policy: result.version.policy,
+              },
+            ]),
+      ]);
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Không thể xuất bản Skill."
@@ -1580,6 +1667,35 @@ export function WritingWorkspace({
                   ).catch(() => undefined)
                 }
               />
+              {menuSkills.some(
+                (skill) => skill.policy.inputScope === "page"
+              ) && (
+                <div
+                  className="mx-auto mb-3 flex w-full max-w-3xl flex-wrap gap-2"
+                  aria-label="Page Skills"
+                >
+                  {menuSkills
+                    .filter((skill) => skill.policy.inputScope === "page")
+                    .map((skill) => (
+                      <Button
+                        key={skill.pageId}
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          editor &&
+                          runPublishedSkill(
+                            skill.pageId,
+                            "page",
+                            editorSkillRange(editor, "page") ?? undefined
+                          )
+                        }
+                      >
+                        <Sparkles data-icon="inline-start" />
+                        {skill.title}
+                      </Button>
+                    ))}
+                </div>
+              )}
               {activeSkill ? (
                 <section
                   className="mx-auto mb-4 flex w-full max-w-3xl flex-wrap items-center gap-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm dark:border-violet-900 dark:bg-violet-950"
@@ -1768,11 +1884,21 @@ export function WritingWorkspace({
                       onReject={rejectSelectionTransform}
                       onAbort={rejectSelectionTransform}
                       onRegenerate={regenerateSelectionTransform}
+                      skills={menuSkills.filter(
+                        (skill) => skill.policy.inputScope === "selection"
+                      )}
+                      onRunSkill={(pageId, range) =>
+                        runPublishedSkill(pageId, "selection", range)
+                      }
                     />
                     <BlockControls
                       editor={editor}
                       pageId={activePage.id}
                       onAskAI={runTransform}
+                      skills={menuSkills.filter(
+                        (skill) => skill.policy.inputScope === "block"
+                      )}
+                      onRunSkill={runBlockSkill}
                     />
                   </>
                 )}

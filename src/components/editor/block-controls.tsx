@@ -30,7 +30,11 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Command,
   CommandEmpty,
@@ -62,9 +66,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   blockText,
+  isSupportedSkillBlock,
   deleteBlock,
   duplicateBlock,
   insertParagraphAfter,
@@ -77,10 +86,21 @@ import {
   type BlockTarget,
 } from "./block-utils";
 
-type AiAction = "improve" | "natural" | "rewrite" | "shorten" | "expand" | "explain" | "phrase";
+type AiAction =
+  | "improve"
+  | "natural"
+  | "rewrite"
+  | "shorten"
+  | "expand"
+  | "explain"
+  | "phrase";
 type BlockAiBehavior = "replace" | "insert";
 
-const blockKinds: Array<{ kind: BlockKind; label: string; icon: React.ReactNode }> = [
+const blockKinds: Array<{
+  kind: BlockKind;
+  label: string;
+  icon: React.ReactNode;
+}> = [
   { kind: "paragraph", label: "Text", icon: <AlignLeft /> },
   { kind: "heading1", label: "Heading 1", icon: <Heading1 /> },
   { kind: "heading2", label: "Heading 2", icon: <Heading2 /> },
@@ -113,7 +133,11 @@ const colors = [
 ];
 
 function lock(editor: Editor, value: boolean) {
-  editor.view.dispatch(editor.state.tr.setMeta("lockDragHandle", value).setMeta("addToHistory", false));
+  editor.view.dispatch(
+    editor.state.tr
+      .setMeta("lockDragHandle", value)
+      .setMeta("addToHistory", false)
+  );
 }
 
 function restoreEditorFocus(editor: Editor) {
@@ -126,17 +150,25 @@ export function BlockControls({
   editor,
   pageId,
   onAskAI,
+  skills = [],
+  onRunSkill,
 }: {
   editor: Editor;
   pageId: string;
   onAskAI(action: AiAction, blockId: string, behavior: BlockAiBehavior): void;
+  skills?: Array<{ pageId: string; title: string }>;
+  onRunSkill?(pageId: string, blockId: string): void;
 }) {
   const [target, setTarget] = useState<BlockTarget | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerTargetId, setPickerTargetId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [touchDrag, setTouchDrag] = useState<{ active: boolean; x: number; y: number } | null>(null);
+  const [touchDrag, setTouchDrag] = useState<{
+    active: boolean;
+    x: number;
+    y: number;
+  } | null>(null);
   const touchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchActive = useRef(false);
   const touchSourceId = useRef<string | null>(null);
@@ -146,17 +178,24 @@ export function BlockControls({
   const menuOpenRef = useRef(false);
   const pickerOpenRef = useRef(false);
 
-  useEffect(() => { menuOpenRef.current = menuOpen; }, [menuOpen]);
-  useEffect(() => { pickerOpenRef.current = pickerOpen; }, [pickerOpen]);
+  useEffect(() => {
+    menuOpenRef.current = menuOpen;
+  }, [menuOpen]);
+  useEffect(() => {
+    pickerOpenRef.current = pickerOpen;
+  }, [pickerOpen]);
 
-  const onNodeChange = useCallback(({ node, pos }: { node: ProseMirrorNode | null; pos: number }) => {
-    if (!node) {
-      if (!menuOpenRef.current && !pickerOpenRef.current) setTarget(null);
-      return;
-    }
-    const next = normalizeBlockTarget(editor, node, pos);
-    if (next) setTarget(next);
-  }, [editor]);
+  const onNodeChange = useCallback(
+    ({ node, pos }: { node: ProseMirrorNode | null; pos: number }) => {
+      if (!node) {
+        if (!menuOpenRef.current && !pickerOpenRef.current) setTarget(null);
+        return;
+      }
+      const next = normalizeBlockTarget(editor, node, pos);
+      if (next) setTarget(next);
+    },
+    [editor]
+  );
 
   function closePicker() {
     setPickerOpen(false);
@@ -200,7 +239,9 @@ export function BlockControls({
 
   function suppressNextMenuOpen() {
     suppressMenu.current = true;
-    window.setTimeout(() => { suppressMenu.current = false; }, 0);
+    window.setTimeout(() => {
+      suppressMenu.current = false;
+    }, 0);
   }
 
   function pointerDown(event: React.PointerEvent<HTMLButtonElement>) {
@@ -209,7 +250,11 @@ export function BlockControls({
     touchSourceId.current = target.id;
     pointerStart.current = { x: event.clientX, y: event.clientY };
     if (event.pointerType === "mouse") return;
-    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* A cancelled pointer may not be capturable. */ }
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      /* A cancelled pointer may not be capturable. */
+    }
     touchTimer.current = setTimeout(() => {
       touchActive.current = true;
       suppressMenu.current = true;
@@ -220,7 +265,10 @@ export function BlockControls({
   }
 
   function pointerMove(event: React.PointerEvent<HTMLButtonElement>) {
-    const distance = Math.hypot(event.clientX - pointerStart.current.x, event.clientY - pointerStart.current.y);
+    const distance = Math.hypot(
+      event.clientX - pointerStart.current.x,
+      event.clientY - pointerStart.current.y
+    );
     if (distance > 8) pointerMoved.current = true;
     if (event.pointerType === "mouse") return;
     if (!touchActive.current) {
@@ -233,17 +281,27 @@ export function BlockControls({
     event.preventDefault();
     setTouchDrag({ active: true, x: event.clientX, y: event.clientY });
     if (event.clientY < 70) window.scrollBy({ top: -16 });
-    else if (event.clientY > window.innerHeight - 70) window.scrollBy({ top: 16 });
+    else if (event.clientY > window.innerHeight - 70)
+      window.scrollBy({ top: 16 });
   }
 
   function pointerEnd(event: React.PointerEvent<HTMLButtonElement>) {
     if (touchTimer.current) clearTimeout(touchTimer.current);
     if (touchActive.current && touchSourceId.current) {
-      const element = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-blockid]");
+      const element = document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest<HTMLElement>("[data-blockid]");
       const targetId = element?.getAttribute("data-blockid");
       if (targetId && element) {
         const rect = element.getBoundingClientRect();
-        if (!moveBlockRelative(editor, touchSourceId.current, targetId, event.clientY > rect.top + rect.height / 2)) {
+        if (
+          !moveBlockRelative(
+            editor,
+            touchSourceId.current,
+            targetId,
+            event.clientY > rect.top + rect.height / 2
+          )
+        ) {
           toast.error("Không thể thả block vào vị trí này");
         }
       }
@@ -262,183 +320,322 @@ export function BlockControls({
     pointerMoved.current = false;
   }
 
-  return <>
-    <DragHandle editor={editor} nested onNodeChange={onNodeChange} className="notion-block-handle">
-      <div className="notion-block-controls" data-testid="block-controls">
-        <Popover open={pickerOpen} onOpenChange={handlePickerOpenChange}>
-          <PopoverTrigger
-            render={<Button variant="ghost" size="icon" aria-label="Thêm block bên dưới" />}
-          >
-            <Plus data-icon="inline-start" />
-          </PopoverTrigger>
-          <PopoverContent side="right" align="start" className="w-80 p-0">
-            <Command>
-              <CommandInput autoFocus placeholder="Tìm loại block…" />
-              <CommandList>
-                <CommandEmpty>Không tìm thấy block.</CommandEmpty>
-                <CommandGroup heading="Basic blocks">
-                  {blockKinds.map((item) => (
-                    <CommandItem key={item.kind} onSelect={() => chooseBlock(item.kind)}>
-                      {item.icon}<span>{item.label}</span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-                <CommandSeparator />
-                <CommandGroup heading="AI">
-                  <CommandItem onSelect={() => {
-                    if (pickerTargetId) onAskAI("improve", pickerTargetId, "insert");
-                    closePicker();
-                  }}>
-                    <Sparkles /> Ask AI
-                  </CommandItem>
-                </CommandGroup>
-              </CommandList>
-            </Command>
-          </PopoverContent>
-        </Popover>
-
-        <DropdownMenu open={menuOpen} onOpenChange={handleMenuOpenChange}>
-          <Tooltip>
-            <TooltipTrigger
+  return (
+    <>
+      <DragHandle
+        editor={editor}
+        nested
+        onNodeChange={onNodeChange}
+        className="notion-block-handle"
+      >
+        <div className="notion-block-controls" data-testid="block-controls">
+          <Popover open={pickerOpen} onOpenChange={handlePickerOpenChange}>
+            <PopoverTrigger
               render={
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="notion-grip"
-                      aria-label="Kéo block hoặc mở tùy chọn"
-                      onPointerDown={pointerDown}
-                      onPointerMove={pointerMove}
-                      onPointerUp={pointerEnd}
-                      onPointerCancel={pointerEnd}
-                      onClickCapture={preventMenuAfterDrag}
-                      onDragStart={() => { pointerMoved.current = true; suppressMenu.current = true; }}
-                      onDragEnd={suppressNextMenuOpen}
-                    />
-                  }
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Thêm block bên dưới"
                 />
               }
             >
-              <GripVertical data-icon="inline-start" />
-            </TooltipTrigger>
-            <TooltipContent side="top">Kéo để di chuyển · Nhấp để mở menu</TooltipContent>
-          </Tooltip>
-
-          <DropdownMenuContent side="right" align="start">
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>{target ? `${target.node.type.name} block` : "Block"}</DropdownMenuLabel>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger><ChevronRight /> Turn into</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuGroup>
+              <Plus data-icon="inline-start" />
+            </PopoverTrigger>
+            <PopoverContent side="right" align="start" className="w-80 p-0">
+              <Command>
+                <CommandInput autoFocus placeholder="Tìm loại block…" />
+                <CommandList>
+                  <CommandEmpty>Không tìm thấy block.</CommandEmpty>
+                  <CommandGroup heading="Basic blocks">
                     {blockKinds.map((item) => (
-                      <DropdownMenuItem key={item.kind} onClick={() => target && turnBlockInto(editor, target.id, item.kind)}>
-                        {item.icon}{item.label}
-                      </DropdownMenuItem>
+                      <CommandItem
+                        key={item.kind}
+                        onSelect={() => chooseBlock(item.kind)}
+                      >
+                        {item.icon}
+                        <span>{item.label}</span>
+                      </CommandItem>
                     ))}
-                  </DropdownMenuGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger><Bot /> Ask AI</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuGroup>
-                    {aiActions.map((item) =>
-                      item.action === "explain" || item.action === "phrase" ? (
-                        <DropdownMenuItem key={item.action} onClick={() => target && onAskAI(item.action, target.id, "replace")}>
-                          <WandSparkles />{item.label}
-                        </DropdownMenuItem>
-                      ) : (
-                        <DropdownMenuSub key={item.action}>
-                          <DropdownMenuSubTrigger><WandSparkles />{item.label}</DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent>
-                            <DropdownMenuItem onClick={() => target && onAskAI(item.action, target.id, "replace")}>Replace block</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => target && onAskAI(item.action, target.id, "insert")}>Insert below</DropdownMenuItem>
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                      )
-                    )}
-                  </DropdownMenuGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger><Paintbrush /> Color</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel>Text</DropdownMenuLabel>
-                    {colors.map((color) => (
-                      <DropdownMenuItem key={`text-${color.label}`} onClick={() => target && setBlockAppearance(editor, target.id, color.value, target.node.attrs.blockBackground)}>
-                        <Circle fill={color.swatch} color={color.swatch} />{color.label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel>Background</DropdownMenuLabel>
-                    {colors.map((color) => (
-                      <DropdownMenuItem key={`bg-${color.label}`} onClick={() => target && setBlockAppearance(editor, target.id, target.node.attrs.blockColor, color.value)}>
-                        <span className="size-4 rounded-sm" style={{ background: color.swatch, opacity: 0.28 }} />{color.label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem onClick={() => target && duplicateBlock(editor, target.id)}><Copy /> Duplicate</DropdownMenuItem>
-              <DropdownMenuItem onClick={copyLink}><Clipboard /> Copy block link</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => target && moveBlock(editor, target.id, "up")}><ArrowUp /> Move up</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => target && moveBlock(editor, target.id, "down")}><ArrowDown /> Move down</DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={() => {
-                  if (!target) return;
-                  if (blockText(target.node)) setDeleteOpen(true);
-                  else deleteBlock(editor, target.id);
-                }}
+                  </CommandGroup>
+                  <CommandSeparator />
+                  <CommandGroup heading="AI">
+                    <CommandItem
+                      onSelect={() => {
+                        if (pickerTargetId)
+                          onAskAI("improve", pickerTargetId, "insert");
+                        closePicker();
+                      }}
+                    >
+                      <Sparkles /> Ask AI
+                    </CommandItem>
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+
+          <DropdownMenu open={menuOpen} onOpenChange={handleMenuOpenChange}>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="notion-grip"
+                        aria-label="Kéo block hoặc mở tùy chọn"
+                        onPointerDown={pointerDown}
+                        onPointerMove={pointerMove}
+                        onPointerUp={pointerEnd}
+                        onPointerCancel={pointerEnd}
+                        onClickCapture={preventMenuAfterDrag}
+                        onDragStart={() => {
+                          pointerMoved.current = true;
+                          suppressMenu.current = true;
+                        }}
+                        onDragEnd={suppressNextMenuOpen}
+                      />
+                    }
+                  />
+                }
               >
-                <Trash2 /> Delete
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </DragHandle>
+                <GripVertical data-icon="inline-start" />
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                Kéo để di chuyển · Nhấp để mở menu
+              </TooltipContent>
+            </Tooltip>
 
-    {touchDrag?.active && (
-      <div className="touch-drag-preview" style={{ left: touchDrag.x + 14, top: touchDrag.y + 14 }}>
-        <GripVertical className="size-4" /> Moving block
-      </div>
-    )}
+            <DropdownMenuContent side="right" align="start">
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>
+                  {target ? `${target.node.type.name} block` : "Block"}
+                </DropdownMenuLabel>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <ChevronRight /> Turn into
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuGroup>
+                      {blockKinds.map((item) => (
+                        <DropdownMenuItem
+                          key={item.kind}
+                          onClick={() =>
+                            target &&
+                            turnBlockInto(editor, target.id, item.kind)
+                          }
+                        >
+                          {item.icon}
+                          {item.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                {skills.length > 0 &&
+                  target &&
+                  isSupportedSkillBlock(target.node) && (
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
+                        <Sparkles /> Skills
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        {skills.map((skill) => (
+                          <DropdownMenuItem
+                            key={skill.pageId}
+                            onClick={() =>
+                              target && onRunSkill?.(skill.pageId, target.id)
+                            }
+                          >
+                            <Sparkles />
+                            {skill.title}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  )}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Bot /> Ask AI
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuGroup>
+                      {aiActions.map((item) =>
+                        item.action === "explain" ||
+                        item.action === "phrase" ? (
+                          <DropdownMenuItem
+                            key={item.action}
+                            onClick={() =>
+                              target &&
+                              onAskAI(item.action, target.id, "replace")
+                            }
+                          >
+                            <WandSparkles />
+                            {item.label}
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuSub key={item.action}>
+                            <DropdownMenuSubTrigger>
+                              <WandSparkles />
+                              {item.label}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent>
+                              <DropdownMenuItem
+                                onClick={() =>
+                                  target &&
+                                  onAskAI(item.action, target.id, "replace")
+                                }
+                              >
+                                Replace block
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() =>
+                                  target &&
+                                  onAskAI(item.action, target.id, "insert")
+                                }
+                              >
+                                Insert below
+                              </DropdownMenuItem>
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                        )
+                      )}
+                    </DropdownMenuGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Paintbrush /> Color
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>Text</DropdownMenuLabel>
+                      {colors.map((color) => (
+                        <DropdownMenuItem
+                          key={`text-${color.label}`}
+                          onClick={() =>
+                            target &&
+                            setBlockAppearance(
+                              editor,
+                              target.id,
+                              color.value,
+                              target.node.attrs.blockBackground
+                            )
+                          }
+                        >
+                          <Circle fill={color.swatch} color={color.swatch} />
+                          {color.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuGroup>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>Background</DropdownMenuLabel>
+                      {colors.map((color) => (
+                        <DropdownMenuItem
+                          key={`bg-${color.label}`}
+                          onClick={() =>
+                            target &&
+                            setBlockAppearance(
+                              editor,
+                              target.id,
+                              target.node.attrs.blockColor,
+                              color.value
+                            )
+                          }
+                        >
+                          <span
+                            className="size-4 rounded-sm"
+                            style={{ background: color.swatch, opacity: 0.28 }}
+                          />
+                          {color.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem
+                  onClick={() => target && duplicateBlock(editor, target.id)}
+                >
+                  <Copy /> Duplicate
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={copyLink}>
+                  <Clipboard /> Copy block link
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => target && moveBlock(editor, target.id, "up")}
+                >
+                  <ArrowUp /> Move up
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => target && moveBlock(editor, target.id, "down")}
+                >
+                  <ArrowDown /> Move down
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => {
+                    if (!target) return;
+                    if (blockText(target.node)) setDeleteOpen(true);
+                    else deleteBlock(editor, target.id);
+                  }}
+                >
+                  <Trash2 /> Delete
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </DragHandle>
 
-    <AlertDialog open={deleteOpen} onOpenChange={(open) => {
-      setDeleteOpen(open);
-      lock(editor, open || menuOpen || pickerOpen);
-      if (!open) restoreEditorFocus(editor);
-    }}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Xóa block này?</AlertDialogTitle>
-          <AlertDialogDescription>Nội dung trong block sẽ bị xóa. Bạn có thể dùng Undo ngay sau đó để khôi phục.</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Hủy</AlertDialogCancel>
-          <AlertDialogAction onClick={() => {
-            if (target) deleteBlock(editor, target.id);
-            setDeleteOpen(false);
-            lock(editor, false);
-          }}>
-            Xóa block
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  </>;
+      {touchDrag?.active && (
+        <div
+          className="touch-drag-preview"
+          style={{ left: touchDrag.x + 14, top: touchDrag.y + 14 }}
+        >
+          <GripVertical className="size-4" /> Moving block
+        </div>
+      )}
+
+      <AlertDialog
+        open={deleteOpen}
+        onOpenChange={(open) => {
+          setDeleteOpen(open);
+          lock(editor, open || menuOpen || pickerOpen);
+          if (!open) restoreEditorFocus(editor);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xóa block này?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Nội dung trong block sẽ bị xóa. Bạn có thể dùng Undo ngay sau đó
+              để khôi phục.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Hủy</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (target) deleteBlock(editor, target.id);
+                setDeleteOpen(false);
+                lock(editor, false);
+              }}
+            >
+              Xóa block
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
 }
 
 export type { AiAction, BlockAiBehavior };

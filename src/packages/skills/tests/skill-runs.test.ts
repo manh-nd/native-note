@@ -183,6 +183,32 @@ describe("published selection Skill runs", () => {
     });
   });
 
+  it("runs block and Page scopes with an explicit context summary and revision", async () => {
+    activeSkill({ ...version, policy: { ...policy, inputScope: "page" } });
+    proposals.createSkillSelectionRun.mockResolvedValue({
+      proposal: { id: "proposal-page", operations: { operations: [] } },
+      run: { id: "run-page" },
+    });
+
+    await runSelectionSkill({
+      userId: "user-1",
+      skillPageId: skill.pageId,
+      page: page as never,
+      snapshot: "A sentence",
+      segments,
+      scope: "page",
+      contextSummary: "Page: Draft; content revision: 7; 1 block segment.",
+    });
+
+    expect(ai.generateStructured).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining(
+        '"contextSummary":"Page: Draft; content revision: 7; 1 block segment."'
+      ),
+      expect.stringContaining("supplied page")
+    );
+  });
+
   it("rejects unpublished, inaccessible, and non-selection Skills before calling the model", async () => {
     database.state.selects.push(
       [{ id: skill.pageId }],

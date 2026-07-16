@@ -1,4 +1,35 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
+
+async function publishMenuSkill(
+  request: APIRequestContext,
+  title: string,
+  inputScope: "selection" | "block" | "page"
+) {
+  const created = await request.post("/api/pages", { data: { title } });
+  const skillPage = (await created.json()).page;
+  await request.patch(`/api/pages/${skillPage.id}`, {
+    data: {
+      contentRevision: skillPage.contentRevision,
+      content: {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            attrs: { blockId: crypto.randomUUID() },
+            content: [{ type: "text", text: "Polish the supplied English." }],
+          },
+        ],
+      },
+    },
+  });
+  await request.post(`/api/pages/${skillPage.id}/skill`, {
+    data: { inputScope, outputMode: "proposal" },
+  });
+  expect(
+    await request.post(`/api/pages/${skillPage.id}/skill/versions`)
+  ).toBeOK();
+  return skillPage;
+}
 
 test("marks, configures, and unmarks a Page as a Skill without changing its document", async ({
   request,
@@ -108,5 +139,82 @@ test("shows Skill state and metadata controls in the Page editor", async ({
   await page.getByRole("button", { name: "Bỏ Skill" }).click();
   await expect(
     page.getByRole("button", { name: "Đánh dấu là Skill" })
+  ).toBeVisible();
+});
+
+test("discovers and accepts a Page Skill proposal from editor surfaces", async ({
+  page,
+  request,
+}) => {
+  const title = `Page polish ${crypto.randomUUID()}`;
+  const selectionTitle = `Selection polish ${crypto.randomUUID()}`;
+  const blockTitle = `Block polish ${crypto.randomUUID()}`;
+  const skillPage = await publishMenuSkill(request, title, "page");
+  await publishMenuSkill(request, selectionTitle, "selection");
+  await publishMenuSkill(request, blockTitle, "block");
+
+  await page.route("**/api/ai/skills/selection", async (route) => {
+    const input = route.request().postDataJSON();
+    expect(input.contextSummary).toContain("content revision:");
+    const operations = input.segments.map(
+      (segment: { blockId: string; text: string }) => ({
+        type: "replace-text",
+        target: {
+          blockId: segment.blockId,
+          expectedText: segment.text,
+          from: 0,
+          to: segment.text.length,
+        },
+        text: `${segment.text}!`,
+      })
+    );
+    await route.fulfill({
+      json: {
+        proposalId: "00000000-0000-4000-8000-000000000199",
+        baseContentRevision: input.contentRevision,
+        contentRevision: input.contentRevision,
+        noChange: false,
+        summaryVi: "Đã đánh bóng trang.",
+        operations: { baseContentRevision: input.contentRevision, operations },
+      },
+    });
+  });
+  await page.route(
+    "**/api/document-proposals/00000000-0000-4000-8000-000000000199/accept",
+    async (route) => {
+      await route.fulfill({ json: { proposal: {} } });
+    }
+  );
+
+  await page.goto("/workspace?page=00000000-0000-4000-8000-000000000020");
+
+  const first = page.locator(
+    "[data-blockid='00000000-0000-4000-8000-000000000101']"
+  );
+  await first.click();
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+End");
+  await page.getByRole("button", { name: "Ask AI" }).click();
+  await page.getByRole("menuitem", { name: selectionTitle }).click();
+  await expect(page.getByRole("button", { name: "Chấp nhận" })).toBeVisible();
+  await page.getByRole("button", { name: "Chấp nhận" }).click();
+
+  await first.hover();
+  await page.getByLabel("Kéo block hoặc mở tùy chọn").click();
+  await page.getByText("Skills", { exact: true }).hover();
+  await page.getByRole("menuitem", { name: blockTitle }).click();
+  await expect(page.getByRole("button", { name: "Chấp nhận" })).toBeVisible();
+  await page.getByRole("button", { name: "Chấp nhận" }).click();
+
+  await page.getByRole("button", { name: title, exact: true }).click();
+  await expect(page.getByRole("button", { name: "Chấp nhận" })).toBeVisible();
+  await page.getByRole("button", { name: "Chấp nhận" }).click();
+  await expect(page.getByRole("button", { name: "Chấp nhận" })).toBeHidden();
+
+  const editor = page.locator(".ProseMirror");
+  await editor.click();
+  await page.keyboard.type("/page");
+  await expect(
+    page.getByRole("option", { name: new RegExp(title) })
   ).toBeVisible();
 });

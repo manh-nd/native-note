@@ -63,6 +63,19 @@ export function blockText(node: ProseMirrorNode) {
   return text;
 }
 
+export function isSupportedSkillBlock(node: ProseMirrorNode) {
+  return (
+    [
+      "paragraph",
+      "heading",
+      "listItem",
+      "taskItem",
+      "blockquote",
+      "codeBlock",
+    ].includes(node.type.name) && Boolean(blockText(node).trim())
+  );
+}
+
 export function insertParagraphAfter(editor: Editor, target: BlockTarget) {
   const current = findBlockById(editor, target.id);
   if (!current) return null;
@@ -225,6 +238,27 @@ export function setBlockAppearance(
 export function blockSnapshot(editor: Editor, blockId: string) {
   const target = findBlockById(editor, blockId);
   return target ? blockText(target.node) : null;
+}
+
+export function editorSkillRange(
+  editor: Editor,
+  scope: "selection" | "block" | "page",
+  blockId?: string
+) {
+  if (scope === "page")
+    return { from: 1, to: Math.max(1, editor.state.doc.content.size - 1) };
+  if (scope === "selection")
+    return editor.state.selection.empty
+      ? null
+      : { from: editor.state.selection.from, to: editor.state.selection.to };
+  if (blockId) {
+    const target = findBlockById(editor, blockId);
+    return target
+      ? { from: target.pos + 1, to: target.pos + target.node.nodeSize - 1 }
+      : null;
+  }
+  const { $from } = editor.state.selection;
+  return { from: $from.start(), to: $from.end() };
 }
 
 export function isAiBlockResultStale(

@@ -18,6 +18,7 @@ import {
   type CompiledSkillDraft,
 } from "./skill-compiler";
 import { createSkillMetadata, type SkillMetadata } from "./skill-metadata";
+import { menuSkillsForScope, type MenuSkill } from "./menu-skills";
 
 export type ManagedSkill = typeof skills.$inferSelect;
 export type PublishedSkillVersion = typeof skillVersions.$inferSelect;
@@ -143,6 +144,26 @@ export async function loadWorkspaceSkills(userId: string) {
     .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
     .where(and(eq(workspaces.userId, userId), isNull(pages.deletedAt)));
   return result.map(({ skill }) => skill);
+}
+
+export async function loadMenuSkills(userId: string): Promise<MenuSkill[]> {
+  const rows = await db
+    .select({
+      id: skills.id,
+      pageId: skills.pageId,
+      title: pages.title,
+      activeVersionId: skills.activeVersionId,
+      versionId: skillVersions.id,
+      policy: skillVersions.policy,
+    })
+    .from(skills)
+    .innerJoin(pages, eq(skills.pageId, pages.id))
+    .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
+    .innerJoin(skillVersions, eq(skills.activeVersionId, skillVersions.id))
+    .where(and(eq(workspaces.userId, userId), isNull(pages.deletedAt)));
+  return (["selection", "block", "page"] as const).flatMap((scope) =>
+    menuSkillsForScope(rows, scope)
+  );
 }
 
 export async function updateSkillMetadata(
@@ -398,31 +419,37 @@ export async function runSelectionSkill({
   page,
   snapshot,
   segments,
+  scope = "selection",
+  contextSummary,
 }: {
   userId: string;
   skillPageId: string;
   page: typeof pages.$inferSelect;
   snapshot: string;
   segments: SelectionSkillSegment[];
+  scope?: "selection" | "block" | "page";
+  contextSummary?: string;
 }) {
   const { version } = await loadActiveSkillVersion(userId, skillPageId);
-  if (version.policy.inputScope !== "selection")
+  if (version.policy.inputScope !== scope)
     throw new ApiError(
       422,
-      "Skill này không hỗ trợ đoạn được chọn.",
+      "Skill này không hỗ trợ phạm vi hiện tại.",
       "SKILL_SCOPE_UNSUPPORTED"
     );
   const expectedIds = segments.map((segment) => segment.id);
   const output = await generateStructured(
     selectionTransformResponseSchema,
     JSON.stringify({
+      scope,
+      contextSummary,
       selection: segments.map(({ id, text, nodeType }) => ({
         id,
         text,
         nodeType,
       })),
     }),
-    `${version.instructionSnapshot}\n\nYou are running this published Skill on the supplied selection. Return exactly one result for every selection ID. Never combine, split, omit, reorder, or add newlines to selection results. Follow the Skill instructions only for the supplied text; do not take external actions.`
+    `${version.instructionSnapshot}\n\nYou are running this published Skill on the supplied ${scope}. The context summary and content revision are informational context only. Return exactly one result for every supplied ID. Never combine, split, omit, reorder, or add newlines to results. Follow the Skill instructions only for the supplied text; do not take external actions.`
   );
   if (!selectionResponseMatchesIds(output, expectedIds))
     throw new ApiError(

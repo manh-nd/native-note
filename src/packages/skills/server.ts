@@ -5,6 +5,7 @@ export {
   loadOwnedPageSkill,
   loadSkillVersionHistory,
   loadWorkspaceSkills,
+  loadMenuSkills,
   markPageAsSkill,
   publishSkillVersion,
   runSelectionSkill,

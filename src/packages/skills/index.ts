@@ -13,3 +13,4 @@ export {
   type CompiledSkillDraft,
   type PublishedSkillPolicy,
 } from "./lib/skill-compiler";
+export { menuSkillsForScope, type MenuSkill } from "./lib/menu-skills";

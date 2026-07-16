@@ -23,6 +23,8 @@ const segmentSchema = z.object({
 const inputSchema = z
   .object({
     skillPageId: z.string().uuid(),
+    scope: z.enum(["selection", "block", "page"]).default("selection"),
+    contextSummary: z.string().max(1200).optional(),
     pageId: z.string().uuid(),
     contentRevision: z.number().int().positive(),
     snapshot: z.string().min(1).max(5030),
@@ -97,6 +99,8 @@ export async function POST(request: Request) {
             result: text,
           })
         ),
+        scope: input.scope,
+        contextSummary: input.contextSummary,
       })
     );
   } catch (error) {
