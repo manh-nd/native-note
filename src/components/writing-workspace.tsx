@@ -25,7 +25,7 @@ import {
 } from "@/packages/document-editor";
 import type { PageDocumentProposal } from "@/packages/document-proposals";
 import { Button } from "@/components/ui/button";
-import type { pages, skills } from "@/db/schema";
+import type { pages, skills, skillVersions } from "@/db/schema";
 import { Toaster } from "@/components/ui/sonner";
 import {
   SidebarInset,
@@ -75,6 +75,7 @@ import {
 
 type PageRow = typeof pages.$inferSelect;
 type SkillRow = typeof skills.$inferSelect;
+type SkillVersionRow = typeof skillVersions.$inferSelect;
 type User = {
   id: string;
   name?: string | null;
@@ -286,6 +287,9 @@ export function WritingWorkspace({
   >(() =>
     Object.fromEntries(initialSkills.map((skill) => [skill.pageId, skill]))
   );
+  const [activeSkillVersions, setActiveSkillVersions] = useState<
+    SkillVersionRow[]
+  >([]);
   const [activeId, setActiveId] = useState(
     initialPages.some((page) => page.id === initialActivePageId)
       ? initialActivePageId!
@@ -348,6 +352,27 @@ export function WritingWorkspace({
   useEffect(() => {
     selectionAiRef.current = selectionAi;
   }, [selectionAi]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeSkill) return;
+    void api<{ versions: SkillVersionRow[] }>(
+      `/api/pages/${activeSkill.pageId}/skill/versions`
+    )
+      .then((result) => {
+        if (!cancelled) setActiveSkillVersions(result.versions);
+      })
+      .catch((cause) => {
+        if (!cancelled)
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Không thể tải lịch sử Skill."
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSkill]);
 
   const updateSelectionAi = useCallback((next: SelectionBubbleState) => {
     selectionAiRef.current = next;
@@ -1267,6 +1292,51 @@ export function WritingWorkspace({
     }
   }
 
+  async function publishActiveSkill() {
+    if (!activeSkill) return;
+    try {
+      await flushEditor();
+      const result = await api<{
+        skill: SkillRow;
+        version: SkillVersionRow;
+      }>(`/api/pages/${activeSkill.pageId}/skill/versions`, { method: "POST" });
+      setSkillsByPageId((current) => ({
+        ...current,
+        [result.skill.pageId]: result.skill,
+      }));
+      setActiveSkillVersions((current) => {
+        const withoutVersion = current.filter(
+          (version) => version.id !== result.version.id
+        );
+        return [result.version, ...withoutVersion].sort(
+          (left, right) => right.version - left.version
+        );
+      });
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Không thể xuất bản Skill."
+      );
+    }
+  }
+
+  async function activateSkillVersion(versionId: string) {
+    if (!activeSkill) return;
+    try {
+      const result = await api<{ skill: SkillRow }>(
+        `/api/pages/${activeSkill.pageId}/skill/versions/${versionId}/activate`,
+        { method: "POST" }
+      );
+      setSkillsByPageId((current) => ({
+        ...current,
+        [result.skill.pageId]: result.skill,
+      }));
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Không thể khôi phục Skill."
+      );
+    }
+  }
+
   async function unmarkPageAsSkill(pageId: string) {
     try {
       await api(`/api/pages/${pageId}/skill`, { method: "DELETE" });
@@ -1518,6 +1588,7 @@ export function WritingWorkspace({
                   <span className="flex items-center gap-1 font-medium text-violet-800 dark:text-violet-200">
                     <Sparkles className="size-4" /> Skill:{" "}
                     {activeSkill.status === "draft" ? "Bản nháp" : "Đã tắt"}
+                    {activeSkill.activeVersionId && " · Đã xuất bản"}
                   </span>
                   <label>
                     Phạm vi{" "}
@@ -1599,10 +1670,54 @@ export function WritingWorkspace({
                   <Button
                     variant="outline"
                     size="sm"
+                    onClick={() => void publishActiveSkill()}
+                  >
+                    Xuất bản bản nháp
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => void unmarkPageAsSkill(activePage.id)}
                   >
                     Bỏ Skill
                   </Button>
+                  {activeSkillVersions.length > 0 && (
+                    <div
+                      className="w-full border-t border-violet-200 pt-2 dark:border-violet-800"
+                      aria-label="Lịch sử phiên bản Skill"
+                    >
+                      <span className="font-medium">Lịch sử phiên bản</span>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {activeSkillVersions.map((version) => {
+                          const isActive =
+                            version.id === activeSkill.activeVersionId;
+                          return (
+                            <span
+                              key={version.id}
+                              className="rounded border border-violet-200 px-2 py-1 dark:border-violet-800"
+                            >
+                              V{version.version} ·{" "}
+                              {new Date(version.publishedAt).toLocaleString(
+                                "vi-VN"
+                              )}
+                              {isActive ? " · Đang hoạt động" : ""}
+                              {!isActive && (
+                                <button
+                                  type="button"
+                                  className="ml-2 underline"
+                                  onClick={() =>
+                                    void activateSkillVersion(version.id)
+                                  }
+                                >
+                                  Khôi phục
+                                </button>
+                              )}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </section>
               ) : (
                 <div className="mx-auto mb-4 w-full max-w-3xl">

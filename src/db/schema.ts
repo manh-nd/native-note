@@ -15,6 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { DocumentContent } from "@/packages/documents";
 import type { DocumentOperationBatch } from "@/packages/document-editor";
+import type { PublishedSkillPolicy } from "@/packages/skills";
 
 export const findingCategory = pgEnum("finding_category", [
   "grammar",
@@ -191,6 +192,7 @@ export const skills = pgTable(
       .notNull()
       .default("required"),
     showInEditorMenu: boolean("show_in_editor_menu").notNull().default(true),
+    activeVersionId: uuid("active_version_id"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -201,6 +203,37 @@ export const skills = pgTable(
   (table) => [
     uniqueIndex("skills_page_id_idx").on(table.pageId),
     index("skills_creator_status_idx").on(table.creatorId, table.status),
+  ]
+);
+
+export const skillVersions = pgTable(
+  "skill_versions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    skillId: uuid("skill_id")
+      .notNull()
+      .references(() => skills.id),
+    version: integer("version").notNull(),
+    instructionSnapshot: text("instruction_snapshot").notNull(),
+    policy: jsonb("policy").$type<PublishedSkillPolicy>().notNull(),
+    compilerVersion: text("compiler_version").notNull(),
+    sourceContentRevision: integer("source_content_revision").notNull(),
+    publishedBy: text("published_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    publishedAt: timestamp("published_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("skill_versions_skill_version_idx").on(
+      table.skillId,
+      table.version
+    ),
+    index("skill_versions_skill_published_idx").on(
+      table.skillId,
+      table.publishedAt
+    ),
   ]
 );
 
@@ -397,9 +430,26 @@ export const pageRelations = relations(pages, ({ one, many }) => ({
   skill: one(skills),
 }));
 
-export const skillRelations = relations(skills, ({ one }) => ({
+export const skillRelations = relations(skills, ({ one, many }) => ({
   page: one(pages, { fields: [skills.pageId], references: [pages.id] }),
   creator: one(users, { fields: [skills.creatorId], references: [users.id] }),
+  activeVersion: one(skillVersions, {
+    fields: [skills.activeVersionId],
+    references: [skillVersions.id],
+    relationName: "activeSkillVersion",
+  }),
+  versions: many(skillVersions),
+}));
+
+export const skillVersionRelations = relations(skillVersions, ({ one }) => ({
+  skill: one(skills, {
+    fields: [skillVersions.skillId],
+    references: [skills.id],
+  }),
+  publisher: one(users, {
+    fields: [skillVersions.publishedBy],
+    references: [users.id],
+  }),
 }));
 
 export const pageSearchIndex = sql`to_tsvector('english', ${pages.plainText})`;
