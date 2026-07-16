@@ -4,6 +4,7 @@ export {
   createBlockDocumentProposalOperations,
   createLearningItemFromFinding,
   createReviewDocumentProposals,
+  createSkillSelectionRun,
   createSelectionDocumentProposal,
   dismissReviewFinding,
   loadPageDocumentProposals,

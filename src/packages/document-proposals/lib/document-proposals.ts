@@ -27,6 +27,15 @@ export type SelectionProposalSegment = {
   result: string;
 };
 
+type SelectionSkillVersion = {
+  id: string;
+  policy: {
+    inputScope: string;
+    outputMode: "proposal" | "read_only";
+    [key: string]: unknown;
+  };
+};
+
 export type BlockProposalBehavior = "replace" | "insert";
 
 export function createBlockDocumentProposalOperations({
@@ -115,7 +124,7 @@ type Proposal = typeof documentProposals.$inferSelect;
 
 export type PageDocumentProposal = Proposal & {
   action: string;
-  sourceKind: "selection" | "block" | "review";
+  sourceKind: "selection" | "block" | "review" | "skill";
 };
 
 export type ReviewFindingDraft = {
@@ -264,6 +273,88 @@ function selectionOperations(
   };
 }
 
+type SelectionRunOptions = {
+  page: Page;
+  userId: string;
+  sourceKind: "selection" | "skill";
+  action: string;
+  snapshot: string;
+  model: string;
+  summaryVi: string;
+  segments: SelectionProposalSegment[];
+  alwaysRecordRun?: boolean;
+  createProposal?: boolean;
+  audit?: {
+    skillVersionId: string;
+    policySnapshot: SelectionSkillVersion["policy"];
+  };
+};
+
+async function persistSelectionRun({
+  page,
+  userId,
+  sourceKind,
+  action,
+  snapshot,
+  model,
+  summaryVi,
+  segments,
+  alwaysRecordRun = false,
+  createProposal = true,
+  audit,
+}: SelectionRunOptions) {
+  return db.transaction(async (tx) => {
+    const [currentPage] = await tx
+      .select()
+      .from(pages)
+      .where(eq(pages.id, page.id))
+      .for("update")
+      .limit(1);
+    if (!currentPage || currentPage.contentRevision !== page.contentRevision) {
+      throw new ApiError(
+        409,
+        "Nội dung đã thay đổi. Hãy chọn lại và thử lần nữa.",
+        "STALE_SELECTION"
+      );
+    }
+    const operations = selectionOperations(currentPage, segments);
+    if (!operations.operations.length && !alwaysRecordRun)
+      return { run: null, proposal: null };
+    const [run] = await tx
+      .insert(aiRuns)
+      .values({
+        pageId: currentPage.id,
+        creatorId: userId,
+        sourceKind,
+        action,
+        model,
+        status: "completed",
+        inputSnapshot: snapshot,
+        outputSnapshot: { summaryVi, segments },
+        ...(audit && {
+          contentRevision: currentPage.contentRevision,
+          skillVersionId: audit.skillVersionId,
+          policySnapshot: audit.policySnapshot,
+        }),
+      })
+      .returning();
+    if (!createProposal || !operations.operations.length)
+      return { run, proposal: null };
+    const [proposal] = await tx
+      .insert(documentProposals)
+      .values({
+        pageId: currentPage.id,
+        sourceRunId: run.id,
+        creatorId: userId,
+        baseContentRevision: currentPage.contentRevision,
+        operations,
+        summaryVi,
+      })
+      .returning();
+    return { run, proposal };
+  });
+}
+
 export async function createSelectionDocumentProposal({
   page,
   userId,
@@ -281,47 +372,51 @@ export async function createSelectionDocumentProposal({
   summaryVi: string;
   segments: SelectionProposalSegment[];
 }) {
-  return db.transaction(async (tx) => {
-    const [currentPage] = await tx
-      .select()
-      .from(pages)
-      .where(eq(pages.id, page.id))
-      .for("update")
-      .limit(1);
-    if (!currentPage || currentPage.contentRevision !== page.contentRevision) {
-      throw new ApiError(
-        409,
-        "Nội dung đã thay đổi. Hãy chọn lại và thử lần nữa.",
-        "STALE_SELECTION"
-      );
-    }
-    const operations = selectionOperations(currentPage, segments);
-    if (!operations.operations.length) return null;
-    const [run] = await tx
-      .insert(aiRuns)
-      .values({
-        pageId: page.id,
-        creatorId: userId,
-        sourceKind: "selection",
-        action,
-        model,
-        status: "completed",
-        inputSnapshot: snapshot,
-        outputSnapshot: { summaryVi, segments },
-      })
-      .returning();
-    const [proposal] = await tx
-      .insert(documentProposals)
-      .values({
-        pageId: page.id,
-        sourceRunId: run.id,
-        creatorId: userId,
-        baseContentRevision: page.contentRevision,
-        operations,
-        summaryVi,
-      })
-      .returning();
-    return proposal;
+  const stored = await persistSelectionRun({
+    page,
+    userId,
+    sourceKind: "selection",
+    action,
+    snapshot,
+    model,
+    summaryVi,
+    segments,
+  });
+  return stored.proposal;
+}
+
+export async function createSkillSelectionRun({
+  page,
+  userId,
+  skillVersion,
+  snapshot,
+  model,
+  summaryVi,
+  segments,
+}: {
+  page: Page;
+  userId: string;
+  skillVersion: SelectionSkillVersion;
+  snapshot: string;
+  model: string;
+  summaryVi: string;
+  segments: SelectionProposalSegment[];
+}) {
+  return persistSelectionRun({
+    page,
+    userId,
+    sourceKind: "skill",
+    action: `skill:${skillVersion.id}`,
+    snapshot,
+    model,
+    summaryVi,
+    segments,
+    alwaysRecordRun: true,
+    createProposal: skillVersion.policy.outputMode === "proposal",
+    audit: {
+      skillVersionId: skillVersion.id,
+      policySnapshot: skillVersion.policy,
+    },
   });
 }
 

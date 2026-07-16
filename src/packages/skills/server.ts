@@ -7,6 +7,7 @@ export {
   loadWorkspaceSkills,
   markPageAsSkill,
   publishSkillVersion,
+  runSelectionSkill,
   unmarkPageAsSkill,
   updateSkillMetadata,
   type ManagedSkill,

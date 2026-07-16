@@ -2,7 +2,16 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { pages, skills, skillVersions, workspaces } from "@/db/schema";
 import { ApiError } from "@/lib/api";
+import { generateStructured, getTextModel } from "@/lib/ai/gemini";
+import {
+  selectionResponseMatchesIds,
+  selectionTransformResponseSchema,
+} from "@/lib/ai/schemas";
 import { createEmptyStoredDocument } from "@/packages/documents";
+import {
+  createSkillSelectionRun,
+  type SelectionProposalSegment,
+} from "@/packages/document-proposals";
 import {
   compileSkillDraft,
   SkillCompilationError,
@@ -12,6 +21,10 @@ import { createSkillMetadata, type SkillMetadata } from "./skill-metadata";
 
 export type ManagedSkill = typeof skills.$inferSelect;
 export type PublishedSkillVersion = typeof skillVersions.$inferSelect;
+type SelectionSkillSegment = Omit<SelectionProposalSegment, "result"> & {
+  id: string;
+  nodeType: string;
+};
 // Ticket 16 introduces the Tool registry; no Tool is accessible before then.
 const accessibleSkillTools = new Set<string>();
 
@@ -199,7 +212,7 @@ function compilePublishedSkill(
   }
 }
 
-function assertAccessibleTools(compiled: CompiledSkillDraft) {
+function assertAccessibleTools(compiled: Pick<CompiledSkillDraft, "policy">) {
   const inaccessible = compiled.policy.allowedTools.filter(
     (tool) => !accessibleSkillTools.has(tool)
   );
@@ -375,5 +388,78 @@ export async function loadActiveSkillVersion(userId: string, pageId: string) {
     );
   if (version.policy.status === "disabled")
     throw new ApiError(409, "Skill đang bị tắt.", "SKILL_DISABLED");
+  assertAccessibleTools({ policy: version.policy });
   return { skill, version };
+}
+
+export async function runSelectionSkill({
+  userId,
+  skillPageId,
+  page,
+  snapshot,
+  segments,
+}: {
+  userId: string;
+  skillPageId: string;
+  page: typeof pages.$inferSelect;
+  snapshot: string;
+  segments: SelectionSkillSegment[];
+}) {
+  const { version } = await loadActiveSkillVersion(userId, skillPageId);
+  if (version.policy.inputScope !== "selection")
+    throw new ApiError(
+      422,
+      "Skill này không hỗ trợ đoạn được chọn.",
+      "SKILL_SCOPE_UNSUPPORTED"
+    );
+  const expectedIds = segments.map((segment) => segment.id);
+  const output = await generateStructured(
+    selectionTransformResponseSchema,
+    JSON.stringify({
+      selection: segments.map(({ id, text, nodeType }) => ({
+        id,
+        text,
+        nodeType,
+      })),
+    }),
+    `${version.instructionSnapshot}\n\nYou are running this published Skill on the supplied selection. Return exactly one result for every selection ID. Never combine, split, omit, reorder, or add newlines to selection results. Follow the Skill instructions only for the supplied text; do not take external actions.`
+  );
+  if (!selectionResponseMatchesIds(output, expectedIds))
+    throw new ApiError(
+      502,
+      "Skill trả về thiếu hoặc trùng đoạn đã chọn.",
+      "INVALID_AI_RESPONSE"
+    );
+  const outputById = new Map(
+    output.segments.map((segment) => [segment.id, segment])
+  );
+  const stored = await createSkillSelectionRun({
+    page,
+    userId,
+    skillVersion: version,
+    snapshot,
+    model: getTextModel(),
+    summaryVi: output.summaryVi,
+    segments: segments.map((source) => ({
+      blockId: source.blockId,
+      blockFrom: source.blockFrom,
+      blockTo: source.blockTo,
+      text: source.text,
+      result: outputById.get(source.id)!.result,
+    })),
+  });
+  if (!stored.run) throw new Error("Skill run was not recorded.");
+  return {
+    runId: stored.run.id,
+    proposalId: stored.proposal?.id ?? null,
+    baseContentRevision: page.contentRevision,
+    contentRevision: page.contentRevision,
+    noChange: !stored.proposal,
+    operations: stored.proposal?.operations ?? {
+      baseContentRevision: page.contentRevision,
+      operations: [],
+    },
+    outputMode: version.policy.outputMode,
+    output,
+  };
 }

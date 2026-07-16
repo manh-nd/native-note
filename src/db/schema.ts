@@ -47,6 +47,7 @@ export const aiRunSourceKind = pgEnum("ai_run_source_kind", [
   "selection",
   "block",
   "review",
+  "skill",
 ]);
 export const aiRunStatus = pgEnum("ai_run_status", ["completed", "failed"]);
 export const documentProposalStatus = pgEnum("document_proposal_status", [
@@ -251,6 +252,9 @@ export const aiRuns = pgTable("ai_runs", {
   status: aiRunStatus("status").notNull(),
   inputSnapshot: text("input_snapshot").notNull(),
   outputSnapshot: jsonb("output_snapshot").notNull(),
+  contentRevision: integer("content_revision"),
+  skillVersionId: uuid("skill_version_id").references(() => skillVersions.id),
+  policySnapshot: jsonb("policy_snapshot").$type<Record<string, unknown>>(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
