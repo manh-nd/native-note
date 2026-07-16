@@ -3,6 +3,7 @@ import { db } from "@/db";
 import {
   aiRuns,
   agentRuns,
+  agents,
   documentProposals,
   findings,
   learningItems,
@@ -1080,6 +1081,67 @@ export async function loadPageDocumentProposals(
       ),
     };
   });
+}
+
+export async function loadScheduledProposalInbox(
+  userId: string,
+  now = new Date()
+) {
+  const rows = await db
+    .select({
+      proposal: documentProposals,
+      page: pages,
+      agentId: agents.id,
+      agentName: agents.name,
+      agentPrompt: agentRuns.promptSnapshot,
+    })
+    .from(documentProposals)
+    .innerJoin(aiRuns, eq(documentProposals.sourceRunId, aiRuns.id))
+    .innerJoin(agentRuns, eq(documentProposals.agentRunId, agentRuns.id))
+    .innerJoin(agents, eq(agentRuns.agentId, agents.id))
+    .innerJoin(pages, eq(documentProposals.pageId, pages.id))
+    .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
+    .where(
+      and(
+        eq(workspaces.userId, userId),
+        eq(documentProposals.creatorId, userId),
+        eq(aiRuns.action, "scheduled_agent"),
+        inArray(documentProposals.status, ["pending", "stale"])
+      )
+    )
+    .orderBy(desc(documentProposals.createdAt));
+  const staleIds = rows
+    .filter(
+      ({ proposal, page }) =>
+        proposal.status === "pending" &&
+        isDocumentProposalStale({
+          content: page.content,
+          contentRevision: page.contentRevision,
+          proposal,
+        })
+    )
+    .map(({ proposal }) => proposal.id);
+  if (staleIds.length)
+    await db
+      .update(documentProposals)
+      .set({ status: "stale", decidedAt: now })
+      .where(
+        and(
+          inArray(documentProposals.id, staleIds),
+          eq(documentProposals.status, "pending")
+        )
+      );
+  return rows.map(({ proposal, page, agentId, agentName, agentPrompt }) => ({
+    ...proposal,
+    status: staleIds.includes(proposal.id)
+      ? ("stale" as const)
+      : proposal.status,
+    pageTitle: page.title,
+    agentId,
+    agentName,
+    agentPrompt,
+    ageMs: Math.max(0, now.getTime() - proposal.createdAt.getTime()),
+  }));
 }
 
 export async function acceptDocumentProposal(

@@ -14,7 +14,9 @@ pnpm db:migrate
 pnpm dev
 ```
 
-Cấu hình Google OAuth callback là `http://localhost:3000/api/auth/callback/google`. Điền `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_SECRET`, `GEMINI_API_KEYS` và tùy chọn `GEMINI_DEFAULT_MODEL` trong `.env.local`. `GEMINI_API_KEYS` là danh sách key phân cách bằng dấu phẩy; nên dùng key từ các Google project khác nhau để việc xoay key có thể tăng quota thực tế.
+Cấu hình Google OAuth callback là `http://localhost:3000/api/auth/callback/google`. Điền `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET`, `AUTH_SECRET`, `CRON_SECRET`, `GEMINI_API_KEYS` và tùy chọn `GEMINI_DEFAULT_MODEL` trong `.env.local`. `GEMINI_API_KEYS` là danh sách key phân cách bằng dấu phẩy; nên dùng key từ các Google project khác nhau để việc xoay key có thể tăng quota thực tế.
+
+Để chạy AgentSchedule, cấu hình scheduler gọi `POST /api/internal/agent-schedules/dispatch` ít nhất mỗi phút với header `Authorization: Bearer <CRON_SECRET>`. Dispatcher gộp các khoảng chạy bị lỡ thành một ScheduleDelivery, chuyển lịch đến lần chạy tương lai kế tiếp và bỏ qua delivery trùng lặp.
 
 ## Kiến trúc
 

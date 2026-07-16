@@ -244,6 +244,8 @@ export async function runAgentDefinition({
   registry = createInitialToolRegistry(),
   retryOfRunId,
   retryRootRunId,
+  trigger = "manual",
+  scheduleDeliveryId,
   completedToolCalls = new Map(),
   isCancellationRequested = persistedCancellationRequested,
 }: {
@@ -255,9 +257,24 @@ export async function runAgentDefinition({
   registry?: ToolRegistry;
   retryOfRunId?: string;
   retryRootRunId?: string;
+  trigger?: "manual" | "scheduled";
+  scheduleDeliveryId?: string;
   completedToolCalls?: Map<string, CompletedToolCall>;
   isCancellationRequested?: (runId: string) => Promise<boolean>;
 }) {
+  if (scheduleDeliveryId) {
+    const [existing] = await db
+      .select()
+      .from(agentRuns)
+      .where(
+        and(
+          eq(agentRuns.scheduleDeliveryId, scheduleDeliveryId),
+          eq(agentRuns.creatorId, userId)
+        )
+      )
+      .limit(1);
+    if (existing) return existing;
+  }
   const [owned] = await db
     .select({
       agent: agents,
@@ -339,7 +356,7 @@ export async function runAgentDefinition({
         pageId,
         creatorId: userId,
         sourceKind: "agent",
-        action: "manual_agent",
+        action: trigger === "scheduled" ? "scheduled_agent" : "manual_agent",
         model: definition.modelPolicy.model,
         status: "running",
         inputSnapshot: prompt,
@@ -362,6 +379,8 @@ export async function runAgentDefinition({
         creatorId: userId,
         retryOfRunId,
         retryRootRunId,
+        trigger,
+        scheduleDeliveryId,
         promptSnapshot: prompt,
         agentSnapshot: definition,
         toolSnapshots,
@@ -531,6 +550,7 @@ export async function loadAgentRuns(userId: string, agentId: string) {
   return runs.map((run) => ({
     id: run.id,
     status: run.status,
+    trigger: run.trigger,
     modelSnapshot: run.agentSnapshot.modelPolicy,
     toolSnapshots: run.toolSnapshots,
     output: run.output,
@@ -640,6 +660,7 @@ export async function retryAgentRun({
       pageId: agentRuns.pageId,
       promptSnapshot: agentRuns.promptSnapshot,
       retryRootRunId: agentRuns.retryRootRunId,
+      trigger: agentRuns.trigger,
       status: agentRuns.status,
     })
     .from(agentRuns)
@@ -715,6 +736,7 @@ export async function retryAgentRun({
       registry,
       retryOfRunId: previous.id,
       retryRootRunId,
+      trigger: previous.trigger,
       completedToolCalls,
     });
   } catch (error) {

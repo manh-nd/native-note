@@ -84,6 +84,19 @@ export const agentRunStatus = pgEnum("agent_run_status", [
   "cancelled",
   "step_limit",
 ]);
+export const agentRunTrigger = pgEnum("agent_run_trigger", [
+  "manual",
+  "scheduled",
+]);
+export const agentScheduleFrequency = pgEnum("agent_schedule_frequency", [
+  "daily",
+  "weekly",
+]);
+export const scheduleDeliveryStatus = pgEnum("schedule_delivery_status", [
+  "claimed",
+  "completed",
+  "failed",
+]);
 export const toolRisk = pgEnum("tool_risk", ["low", "medium", "high"]);
 export const toolApprovalState = pgEnum("tool_approval_state", [
   "not_required",
@@ -307,6 +320,78 @@ export const agents = pgTable(
   (table) => [index("agents_creator_idx").on(table.creatorId, table.createdAt)]
 );
 
+export const agentSchedules = pgTable(
+  "agent_schedules",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    creatorId: text("creator_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    pageId: uuid("page_id")
+      .notNull()
+      .references(() => pages.id, { onDelete: "cascade" }),
+    prompt: text("prompt").notNull(),
+    frequency: agentScheduleFrequency("frequency").notNull(),
+    weekday: integer("weekday"),
+    localHour: integer("local_hour").notNull(),
+    localMinute: integer("local_minute").notNull(),
+    timeZone: text("time_zone").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    nextRunAt: timestamp("next_run_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("agent_schedules_creator_idx").on(table.creatorId, table.createdAt),
+    index("agent_schedules_agent_idx").on(table.agentId, table.createdAt),
+    index("agent_schedules_due_idx").on(table.enabled, table.nextRunAt),
+  ]
+);
+
+export const scheduleDeliveries = pgTable(
+  "schedule_deliveries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    scheduleId: uuid("schedule_id")
+      .notNull()
+      .references(() => agentSchedules.id, { onDelete: "cascade" }),
+    creatorId: text("creator_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: uuid("agent_id").notNull(),
+    pageId: uuid("page_id").notNull(),
+    promptSnapshot: text("prompt_snapshot").notNull(),
+    dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
+    status: scheduleDeliveryStatus("status").notNull().default("claimed"),
+    attemptCount: integer("attempt_count").notNull().default(1),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    errorCode: text("error_code"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("schedule_deliveries_occurrence_idx").on(
+      table.scheduleId,
+      table.dueAt
+    ),
+    index("schedule_deliveries_creator_idx").on(
+      table.creatorId,
+      table.createdAt
+    ),
+  ]
+);
+
 export const agentRuns = pgTable(
   "agent_runs",
   {
@@ -325,6 +410,11 @@ export const agentRuns = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     retryOfRunId: uuid("retry_of_run_id"),
     retryRootRunId: uuid("retry_root_run_id"),
+    trigger: agentRunTrigger("trigger").notNull().default("manual"),
+    scheduleDeliveryId: uuid("schedule_delivery_id").references(
+      () => scheduleDeliveries.id,
+      { onDelete: "set null" }
+    ),
     status: agentRunStatus("status").notNull().default("running"),
     promptSnapshot: text("prompt_snapshot").notNull(),
     agentSnapshot: jsonb("agent_snapshot")
@@ -348,6 +438,9 @@ export const agentRuns = pgTable(
     index("agent_runs_agent_created_idx").on(table.agentId, table.createdAt),
     index("agent_runs_page_created_idx").on(table.pageId, table.createdAt),
     uniqueIndex("agent_runs_retry_idx").on(table.retryOfRunId),
+    uniqueIndex("agent_runs_schedule_delivery_idx").on(
+      table.scheduleDeliveryId
+    ),
     index("agent_runs_retry_root_idx").on(table.retryRootRunId),
   ]
 );

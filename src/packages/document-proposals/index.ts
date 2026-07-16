@@ -9,6 +9,7 @@ export {
   createSelectionDocumentProposal,
   dismissReviewFinding,
   loadPageDocumentProposals,
+  loadScheduledProposalInbox,
   rejectDocumentProposal,
   recordReadOnlyAiAction,
   startAiActionRun,

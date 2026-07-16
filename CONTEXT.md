@@ -44,6 +44,14 @@ _Avoid_: Assistant (when the configured worker is meant)
 One auditable execution of an Agent, including its configuration snapshots, status, outputs, and ToolCalls.
 _Avoid_: Agent session
 
+**AgentSchedule**:
+A user-owned recurring instruction to run one Agent against one target Page with a fixed prompt and local cadence.
+_Avoid_: Cron job, scheduled Agent
+
+**ScheduleDelivery**:
+One idempotent occurrence of an AgentSchedule, identified by the time it was due and linked to at most one AgentRun.
+_Avoid_: Trigger, job
+
 **ToolCall**:
 One validated invocation of a registered Tool during an AgentRun, including its input, result or failure, risk, approval state, and timing.
 _Avoid_: Function call (when the audited domain record is meant)

@@ -290,6 +290,28 @@ describe("Agent definitions", () => {
     );
   });
 
+  it("returns the existing AgentRun for a retried ScheduleDelivery", async () => {
+    const existing = {
+      id: "run-1",
+      status: "completed",
+      trigger: "scheduled",
+      scheduleDeliveryId: "delivery-1",
+    };
+    database.state.selects.push([existing]);
+
+    await expect(
+      runAgentDefinition({
+        userId: "user-1",
+        agentId: "agent-1",
+        pageId: "page-1",
+        prompt: "Review this Page.",
+        trigger: "scheduled",
+        scheduleDeliveryId: "delivery-1",
+      })
+    ).resolves.toEqual(existing);
+    expect(database.state.insertValues).toHaveLength(0);
+  });
+
   it("makes a recommendation actionable only in the same transaction as its ToolCall audit", async () => {
     const agent = {
       id: "agent-1",

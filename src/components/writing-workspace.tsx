@@ -42,6 +42,7 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { WorkspaceSidebar } from "@/components/workspace-sidebar";
+import { AgentAutomationPanel } from "@/components/agent-automation-panel";
 import { PracticeView } from "./practice-view";
 import { LiveCoach } from "./live-coach";
 import { EditorSession } from "./editor/editor-session";
@@ -362,6 +363,9 @@ export function WritingWorkspace({
   const [staleProposalRecovery, setStaleProposalRecovery] =
     useState<StaleProposalRecovery | null>(null);
   const [proposalReloadKey, setProposalReloadKey] = useState(0);
+  const [preferredProposalId, setPreferredProposalId] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
     slashRef.current = slash;
@@ -982,6 +986,9 @@ export function WritingWorkspace({
         setStaleProposalRecovery(null);
         const blockProposals = proposals.filter(isLoadedCoachPanelProposal);
         const blockProposal =
+          blockProposals.find(
+            (candidate) => candidate.id === preferredProposalId
+          ) ??
           blockProposals.find((candidate) => candidate.status === "pending") ??
           blockProposals[0];
         const blockTarget = blockProposal
@@ -1087,6 +1094,7 @@ export function WritingWorkspace({
     editor,
     editorPageId,
     proposalReloadKey,
+    preferredProposalId,
     updateSelectionAi,
   ]);
 
@@ -1708,6 +1716,15 @@ export function WritingWorkspace({
                   <SidebarTrigger aria-label="Ẩn hoặc mở thanh điều hướng" />
                   <span>Workspace cá nhân</span>
                 </div>
+                <AgentAutomationPanel
+                  pages={pageList.map(({ id, title }) => ({ id, title }))}
+                  activePageId={activePage.id}
+                  onOpenProposal={async (pageId, proposalId) => {
+                    setPreferredProposalId(proposalId);
+                    await selectPage(pageId);
+                    setProposalReloadKey((value) => value + 1);
+                  }}
+                />
                 <span className="save-state">
                   {saving === "saving" ? (
                     <Loader2 size={14} className="animate-spin" />

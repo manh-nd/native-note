@@ -5,15 +5,20 @@ const database = vi.hoisted(() => {
     selects: [] as unknown[][],
     inserts: [] as unknown[][],
     insertValues: [] as unknown[],
+    updates: [] as unknown[][],
+    updateValues: [] as unknown[],
   };
   const select = () => {
     const rows = state.selects.shift() ?? [];
     const query = {
       from: () => query,
       innerJoin: () => query,
+      leftJoin: () => query,
       where: () => query,
+      orderBy: () => query,
       for: () => query,
       limit: () => Promise.resolve(rows),
+      then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
     };
     return query;
   };
@@ -29,7 +34,19 @@ const database = vi.hoisted(() => {
     };
     return query;
   };
-  const connection = { select, insert };
+  const update = () => {
+    const rows = state.updates.shift() ?? [];
+    const query = {
+      set: (value: unknown) => {
+        state.updateValues.push(value);
+        return query;
+      },
+      where: () => query,
+      returning: () => Promise.resolve(rows),
+    };
+    return query;
+  };
+  const connection = { select, insert, update };
   return {
     state,
     db: {
@@ -53,7 +70,10 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-import { createAgentDocumentProposal } from "../index";
+import {
+  createAgentDocumentProposal,
+  loadScheduledProposalInbox,
+} from "../index";
 
 const content = {
   type: "doc",
@@ -96,6 +116,45 @@ describe("Agent DocumentProposal persistence", () => {
     database.state.selects = [];
     database.state.inserts = [];
     database.state.insertValues = [];
+    database.state.updates = [];
+    database.state.updateValues = [];
+  });
+
+  it("lists owned scheduled proposals with Agent, Page, age, and stale status", async () => {
+    const createdAt = new Date("2026-07-16T08:00:00.000Z");
+    database.state.selects.push([
+      {
+        proposal: {
+          id: "proposal-1",
+          pageId: "page-1",
+          baseContentRevision: 3,
+          operations: input.operations,
+          summaryVi: "Improve the opening sentence.",
+          status: "pending",
+          createdAt,
+        },
+        page: { id: "page-1", title: "Draft", contentRevision: 4, content },
+        agentId: "agent-1",
+        agentName: "Coach",
+        agentPrompt: "Review this Page.",
+      },
+    ]);
+    database.state.updates.push([]);
+
+    await expect(
+      loadScheduledProposalInbox("user-1", new Date("2026-07-16T10:00:00.000Z"))
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: "proposal-1",
+        pageId: "page-1",
+        pageTitle: "Draft",
+        agentId: "agent-1",
+        agentName: "Coach",
+        summaryVi: "Improve the opening sentence.",
+        ageMs: 7_200_000,
+        status: "stale",
+      }),
+    ]);
   });
 
   it("persists a pending proposal with complete Agent and Tool provenance without applying content", async () => {
