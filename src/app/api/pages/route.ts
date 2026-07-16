@@ -6,11 +6,13 @@ import { pages } from "@/db/schema";
 import { apiError, parseJson, requireUserId } from "@/lib/api";
 import { ensureWorkspace } from "@/lib/ownership";
 import { createEmptyStoredDocument } from "@/packages/documents";
+import { createSkillPage, loadWorkspaceSkills } from "@/packages/skills/server";
 import { migratePageStoredDocument } from "@/lib/page-document";
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(120).default("Không có tiêu đề"),
   parentId: z.string().uuid().nullable().optional(),
+  markAsSkill: z.boolean().optional().default(false),
 });
 
 export async function GET() {
@@ -25,7 +27,11 @@ export async function GET() {
     const canonicalPages = await Promise.all(
       result.map(migratePageStoredDocument)
     );
-    return NextResponse.json({ workspace, pages: canonicalPages });
+    return NextResponse.json({
+      workspace,
+      pages: canonicalPages,
+      skills: await loadWorkspaceSkills(userId),
+    });
   } catch (error) {
     return apiError(error);
   }
@@ -36,6 +42,17 @@ export async function POST(request: Request) {
     const userId = await requireUserId();
     const input = await parseJson(request, createSchema);
     const workspace = await ensureWorkspace(userId);
+    if (input.markAsSkill) {
+      return NextResponse.json(
+        await createSkillPage({
+          userId,
+          workspaceId: workspace.id,
+          title: input.title,
+          parentId: input.parentId,
+        }),
+        { status: 201 }
+      );
+    }
     if (input.parentId) {
       const [parent] = await db
         .select({ id: pages.id })

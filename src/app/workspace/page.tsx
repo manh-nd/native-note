@@ -7,6 +7,7 @@ import { pages } from "@/db/schema";
 import { ensureWorkspace } from "@/lib/ownership";
 import { migratePageStoredDocument } from "@/lib/page-document";
 import { createEmptyStoredDocument } from "@/packages/documents";
+import { loadWorkspaceSkills } from "@/packages/skills/server";
 import { WritingWorkspace } from "@/components/writing-workspace";
 
 export default async function WorkspacePage({
@@ -45,6 +46,7 @@ export default async function WorkspacePage({
   return (
     <WritingWorkspace
       initialPages={pageList}
+      initialSkills={await loadWorkspaceSkills(session.user.id)}
       user={session.user}
       initialActivePageId={initialActivePageId}
       defaultSidebarOpen={defaultSidebarOpen}

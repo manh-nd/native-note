@@ -1,5 +1,6 @@
 import { relations, sql } from "drizzle-orm";
 import {
+  boolean,
   index,
   integer,
   jsonb,
@@ -52,6 +53,19 @@ export const documentProposalStatus = pgEnum("document_proposal_status", [
   "accepted",
   "rejected",
   "stale",
+]);
+export const skillInputScope = pgEnum("skill_input_scope", [
+  "selection",
+  "block",
+  "page",
+]);
+export const skillOutputMode = pgEnum("skill_output_mode", [
+  "proposal",
+  "read_only",
+]);
+export const skillStatus = pgEnum("skill_status", ["draft", "disabled"]);
+export const skillApprovalPolicy = pgEnum("skill_approval_policy", [
+  "required",
 ]);
 
 export const users = pgTable("users", {
@@ -153,6 +167,40 @@ export const pages = pgTable(
       table.parentId,
       table.position
     ),
+  ]
+);
+
+export const skills = pgTable(
+  "skills",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    pageId: uuid("page_id")
+      .notNull()
+      .references(() => pages.id, { onDelete: "cascade" }),
+    creatorId: text("creator_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    inputScope: skillInputScope("input_scope").notNull().default("selection"),
+    outputMode: skillOutputMode("output_mode").notNull().default("proposal"),
+    status: skillStatus("status").notNull().default("draft"),
+    allowedTools: jsonb("allowed_tools")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    approvalPolicy: skillApprovalPolicy("approval_policy")
+      .notNull()
+      .default("required"),
+    showInEditorMenu: boolean("show_in_editor_menu").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex("skills_page_id_idx").on(table.pageId),
+    index("skills_creator_status_idx").on(table.creatorId, table.status),
   ]
 );
 
@@ -346,6 +394,12 @@ export const pageRelations = relations(pages, ({ one, many }) => ({
   reviews: many(reviews),
   aiRuns: many(aiRuns),
   documentProposals: many(documentProposals),
+  skill: one(skills),
+}));
+
+export const skillRelations = relations(skills, ({ one }) => ({
+  page: one(pages, { fields: [skills.pageId], references: [pages.id] }),
+  creator: one(users, { fields: [skills.creatorId], references: [users.id] }),
 }));
 
 export const pageSearchIndex = sql`to_tsvector('english', ${pages.plainText})`;

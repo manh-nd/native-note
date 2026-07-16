@@ -25,7 +25,7 @@ import {
 } from "@/packages/document-editor";
 import type { PageDocumentProposal } from "@/packages/document-proposals";
 import { Button } from "@/components/ui/button";
-import type { pages } from "@/db/schema";
+import type { pages, skills } from "@/db/schema";
 import { Toaster } from "@/components/ui/sonner";
 import {
   SidebarInset,
@@ -74,6 +74,7 @@ import {
 } from "./editor/selection-ai";
 
 type PageRow = typeof pages.$inferSelect;
+type SkillRow = typeof skills.$inferSelect;
 type User = {
   id: string;
   name?: string | null;
@@ -268,16 +269,23 @@ function revealHashBlock(editor: Editor, attempt = 0) {
 
 export function WritingWorkspace({
   initialPages,
+  initialSkills,
   user,
   initialActivePageId,
   defaultSidebarOpen = true,
 }: {
   initialPages: PageRow[];
+  initialSkills: SkillRow[];
   user: User;
   initialActivePageId?: string;
   defaultSidebarOpen?: boolean;
 }) {
   const [pageList, setPageList] = useState(initialPages);
+  const [skillsByPageId, setSkillsByPageId] = useState<
+    Record<string, SkillRow>
+  >(() =>
+    Object.fromEntries(initialSkills.map((skill) => [skill.pageId, skill]))
+  );
   const [activeId, setActiveId] = useState(
     initialPages.some((page) => page.id === initialActivePageId)
       ? initialActivePageId!
@@ -303,6 +311,7 @@ export function WritingWorkspace({
   });
   const activePage =
     pageList.find((page) => page.id === activeId) ?? pageList[0];
+  const activeSkill = skillsByPageId[activePage.id];
   const pagesRef = useRef(pageList);
   const activeIdRef = useRef(activeId);
   const contentSaveChains = useRef(new Map<string, Promise<void>>());
@@ -1071,24 +1080,40 @@ export function WritingWorkspace({
 
   const loadPage = useCallback(
     async (id: string) => {
-      const result = await api<{ pages: PageRow[] }>("/api/pages");
+      const result = await api<{ pages: PageRow[]; skills: SkillRow[] }>(
+        "/api/pages"
+      );
       const page = result.pages.find((candidate) => candidate.id === id);
       if (!page) throw new Error("Không tìm thấy trang.");
       updatePage(page);
+      setSkillsByPageId(
+        Object.fromEntries(result.skills.map((skill) => [skill.pageId, skill]))
+      );
       return page;
     },
     [updatePage]
   );
 
-  async function addPage() {
+  async function addPage(markAsSkill: boolean) {
     try {
       await flushEditor();
-      const result = await api<{ page: PageRow }>("/api/pages", {
-        method: "POST",
-        body: JSON.stringify({ title: "Trang mới" }),
-      });
+      const result = await api<{ page: PageRow; skill?: SkillRow }>(
+        "/api/pages",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            title: markAsSkill ? "Skill mới" : "Trang mới",
+            markAsSkill,
+          }),
+        }
+      );
       pagesRef.current = [...pagesRef.current, result.page];
       setPageList(pagesRef.current);
+      if (result.skill)
+        setSkillsByPageId((current) => ({
+          ...current,
+          [result.skill!.pageId]: result.skill!,
+        }));
       setActiveId(result.page.id);
       setView("write");
     } catch (cause) {
@@ -1108,6 +1133,11 @@ export function WritingWorkspace({
       if (!next.length) throw new Error("Cần giữ lại ít nhất một trang.");
       pagesRef.current = next;
       setPageList(next);
+      setSkillsByPageId((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([pageId]) => !deleted.has(pageId))
+        )
+      );
       if (deleted.has(activeId)) {
         const nextActiveId = next[0].id;
         await loadPage(nextActiveId);
@@ -1185,6 +1215,73 @@ export function WritingWorkspace({
       titleInputRef.current?.focus();
       titleInputRef.current?.select();
     }, 0);
+  }
+
+  async function markPageAsSkill(pageId: string) {
+    try {
+      const result = await api<{ skill: SkillRow }>(
+        `/api/pages/${pageId}/skill`,
+        {
+          method: "POST",
+          body: JSON.stringify({}),
+        }
+      );
+      setSkillsByPageId((current) => ({
+        ...current,
+        [pageId]: result.skill,
+      }));
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Không thể đánh dấu Skill."
+      );
+    }
+  }
+
+  async function updateActiveSkill(
+    patch: Partial<
+      Pick<
+        SkillRow,
+        | "inputScope"
+        | "outputMode"
+        | "status"
+        | "allowedTools"
+        | "approvalPolicy"
+        | "showInEditorMenu"
+      >
+    >
+  ) {
+    if (!activeSkill) return;
+    try {
+      const result = await api<{ skill: SkillRow }>(
+        `/api/pages/${activeSkill.pageId}/skill`,
+        { method: "PATCH", body: JSON.stringify(patch) }
+      );
+      setSkillsByPageId((current) => ({
+        ...current,
+        [result.skill.pageId]: result.skill,
+      }));
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Không thể cập nhật Skill."
+      );
+    }
+  }
+
+  async function unmarkPageAsSkill(pageId: string) {
+    try {
+      await api(`/api/pages/${pageId}/skill`, { method: "DELETE" });
+      setSkillsByPageId((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(
+            ([currentPageId]) => currentPageId !== pageId
+          )
+        )
+      );
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Không thể bỏ đánh dấu Skill."
+      );
+    }
   }
 
   async function handleFinding(
@@ -1349,6 +1446,7 @@ export function WritingWorkspace({
       <WorkspaceSidebar
         activeId={activeId}
         pages={pageList}
+        skillsByPageId={skillsByPageId}
         user={user}
         onAddPage={addPage}
         onDeletePage={deletePage}
@@ -1356,6 +1454,8 @@ export function WritingWorkspace({
         onPractice={() => setView("practice")}
         onRenamePage={renamePage}
         onSelectPage={selectPage}
+        onMarkSkill={markPageAsSkill}
+        onUnmarkSkill={unmarkPageAsSkill}
       />
       <SidebarInset>
         {view === "practice" ? (
@@ -1410,6 +1510,111 @@ export function WritingWorkspace({
                   ).catch(() => undefined)
                 }
               />
+              {activeSkill ? (
+                <section
+                  className="mx-auto mb-4 flex w-full max-w-3xl flex-wrap items-center gap-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm dark:border-violet-900 dark:bg-violet-950"
+                  aria-label="Cài đặt Skill"
+                >
+                  <span className="flex items-center gap-1 font-medium text-violet-800 dark:text-violet-200">
+                    <Sparkles className="size-4" /> Skill:{" "}
+                    {activeSkill.status === "draft" ? "Bản nháp" : "Đã tắt"}
+                  </span>
+                  <label>
+                    Phạm vi{" "}
+                    <select
+                      aria-label="Phạm vi đầu vào Skill"
+                      value={activeSkill.inputScope}
+                      onChange={(event) =>
+                        void updateActiveSkill({
+                          inputScope: event.target
+                            .value as SkillRow["inputScope"],
+                        })
+                      }
+                    >
+                      <option value="selection">Đoạn chọn</option>
+                      <option value="block">Block</option>
+                      <option value="page">Trang</option>
+                    </select>
+                  </label>
+                  <label>
+                    Đầu ra{" "}
+                    <select
+                      aria-label="Chế độ đầu ra Skill"
+                      value={activeSkill.outputMode}
+                      onChange={(event) =>
+                        void updateActiveSkill({
+                          outputMode: event.target
+                            .value as SkillRow["outputMode"],
+                        })
+                      }
+                    >
+                      <option value="proposal">Đề xuất chỉnh sửa</option>
+                      <option value="read_only">Chỉ đọc</option>
+                    </select>
+                  </label>
+                  <label>
+                    Trạng thái{" "}
+                    <select
+                      aria-label="Trạng thái Skill"
+                      value={activeSkill.status}
+                      onChange={(event) =>
+                        void updateActiveSkill({
+                          status: event.target.value as SkillRow["status"],
+                        })
+                      }
+                    >
+                      <option value="draft">Bản nháp</option>
+                      <option value="disabled">Đã tắt</option>
+                    </select>
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={activeSkill.showInEditorMenu}
+                      onChange={(event) =>
+                        void updateActiveSkill({
+                          showInEditorMenu: event.target.checked,
+                        })
+                      }
+                    />{" "}
+                    Hiện trong menu editor
+                  </label>
+                  <span>Phê duyệt: bắt buộc</span>
+                  <label className="min-w-48 flex-1">
+                    Công cụ được phép{" "}
+                    <input
+                      aria-label="Công cụ được phép"
+                      className="w-full rounded border bg-background px-2 py-1"
+                      defaultValue={activeSkill.allowedTools.join(", ")}
+                      onBlur={(event) =>
+                        void updateActiveSkill({
+                          allowedTools: event.target.value
+                            .split(",")
+                            .map((tool) => tool.trim())
+                            .filter(Boolean),
+                        })
+                      }
+                    />
+                  </label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void unmarkPageAsSkill(activePage.id)}
+                  >
+                    Bỏ Skill
+                  </Button>
+                </section>
+              ) : (
+                <div className="mx-auto mb-4 w-full max-w-3xl">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void markPageAsSkill(activePage.id)}
+                  >
+                    <Sparkles data-icon="inline-start" /> Đánh dấu là Skill
+                  </Button>
+                </div>
+              )}
               {error && (
                 <div className="error-banner" role="alert">
                   {error}
