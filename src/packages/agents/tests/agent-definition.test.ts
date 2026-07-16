@@ -44,7 +44,15 @@ const database = vi.hoisted(() => {
     };
     return query;
   };
-  return { state, db: { select, insert, update } };
+  const connection = { select, insert, update };
+  return {
+    state,
+    db: {
+      ...connection,
+      transaction: async <T>(run: (tx: typeof connection) => Promise<T>) =>
+        run(connection),
+    },
+  };
 });
 
 vi.mock("@/db", () => ({ db: database.db }));

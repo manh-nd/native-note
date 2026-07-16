@@ -1,6 +1,5 @@
 import {
   ToolExecutionError,
-  redactToolAuditValue,
   type ToolContext,
   type ToolRegistry,
   type ToolRisk,
@@ -60,7 +59,7 @@ export type ToolCallAudit = {
   name: string;
   input: unknown;
   output: unknown | null;
-  risk: ToolRisk | null;
+  risk: ToolRisk;
   approvalState: "not_required" | "pending" | "approved" | "denied";
   startedAt: Date;
   completedAt: Date;
@@ -143,8 +142,8 @@ export async function runReadOnlyAgent({
         await audit({
           toolCallId: call.id,
           name: call.name,
-          input: redactToolAuditValue(call.input),
-          output: redactToolAuditValue(result.output),
+          input: result.auditInput,
+          output: result.auditOutput,
           risk: result.snapshot.risk,
           approvalState: "not_required",
           startedAt,
@@ -170,11 +169,13 @@ export async function runReadOnlyAgent({
         await audit({
           toolCallId: call.id,
           name: call.name,
-          input: redactToolAuditValue(call.input),
+          input: "[REDACTED:INVALID_OR_UNAUTHORIZED_TOOL_INPUT]",
           output: null,
-          risk: toolSnapshot?.risk ?? null,
+          risk: toolSnapshot?.risk ?? "high",
           approvalState:
-            toolSnapshot?.approval === "required" ? "pending" : "not_required",
+            toolSnapshot?.approval === "not_required"
+              ? "not_required"
+              : "pending",
           startedAt,
           completedAt,
           durationMs: completedAt.getTime() - startedAt.getTime(),

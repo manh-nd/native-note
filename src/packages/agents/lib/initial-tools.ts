@@ -71,6 +71,20 @@ export function createInitialToolRegistry() {
       ownership: "current_user",
       risk: "low",
       approval: "not_required",
+      audit: {
+        mode: "redacted",
+        input: () => ({}),
+        output: (rawOutput) => {
+          const output = readPageOutput.parse(rawOutput);
+          return {
+            pageId: output.pageId,
+            title: "[REDACTED:SENSITIVE_PAGE_CONTENT]",
+            contentRevision: output.contentRevision,
+            plainText: "[REDACTED:SENSITIVE_PAGE_CONTENT]",
+            content: "[REDACTED:SENSITIVE_PAGE_CONTENT]",
+          };
+        },
+      },
       authorize: async ({ userId, currentPageId }) =>
         Boolean(await loadOwnedCurrentPage(userId, currentPageId)),
       execute: async ({ userId, currentPageId }) => {
@@ -88,6 +102,23 @@ export function createInitialToolRegistry() {
       ownership: "current_user",
       risk: "low",
       approval: "not_required",
+      audit: {
+        mode: "redacted",
+        input: (rawInput) => ({
+          query: "[REDACTED:SENSITIVE_SEARCH_TEXT]",
+          limit: searchInput.parse(rawInput).limit,
+        }),
+        output: (rawOutput) => ({
+          items: searchOutput.parse(rawOutput).items.map((item) => ({
+            id: item.id,
+            category: item.category,
+            originalPattern: "[REDACTED:SENSITIVE_LEARNING_CONTENT]",
+            targetExpression: "[REDACTED:SENSITIVE_LEARNING_CONTENT]",
+            explanationVi: "[REDACTED:SENSITIVE_LEARNING_CONTENT]",
+            sourceContext: "[REDACTED:SENSITIVE_LEARNING_CONTENT]",
+          })),
+        }),
+      },
       authorize: async ({ userId }) => Boolean(userId),
       execute: async ({ userId }, rawInput) => {
         const input = searchInput.parse(rawInput);

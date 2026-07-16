@@ -308,6 +308,7 @@ export async function runAgentDefinition({
       instructionsPageId: definition.instructions.pageId,
       instructionsContentRevision: definition.instructions.contentRevision,
       instructionsSnapshot: definition.instructions.snapshot,
+      completedAt: null,
     })
     .returning();
   if (!sourceRun) throw new Error("AI run was not created.");
@@ -325,6 +326,36 @@ export async function runAgentDefinition({
     })
     .returning();
   if (!run) throw new Error("AgentRun was not created.");
+
+  async function finishRuns({
+    status,
+    output,
+    stepCount,
+    errorCode,
+  }: {
+    status: "completed" | "failed" | "step_limit";
+    output: string | null;
+    stepCount: number;
+    errorCode: string | null;
+  }) {
+    return db.transaction(async (tx) => {
+      const completedAt = new Date();
+      await tx
+        .update(aiRuns)
+        .set({
+          status,
+          outputSnapshot: { output, stepCount, errorCode },
+          completedAt,
+        })
+        .where(eq(aiRuns.id, sourceRun.id));
+      const [completed] = await tx
+        .update(agentRuns)
+        .set({ status, output, stepCount, errorCode, completedAt })
+        .where(eq(agentRuns.id, run.id))
+        .returning();
+      return completed;
+    });
+  }
 
   let result;
   try {
@@ -351,48 +382,20 @@ export async function runAgentDefinition({
       },
     });
   } catch (error) {
-    await db
-      .update(aiRuns)
-      .set({
-        status: "failed",
-        outputSnapshot: { errorCode: "AGENT_RUNTIME_FAILED" },
-        completedAt: new Date(),
-      })
-      .where(eq(aiRuns.id, sourceRun.id));
-    await db
-      .update(agentRuns)
-      .set({
-        status: "failed",
-        errorCode: "AGENT_RUNTIME_FAILED",
-        completedAt: new Date(),
-      })
-      .where(eq(agentRuns.id, run.id));
+    await finishRuns({
+      status: "failed",
+      output: null,
+      stepCount: 0,
+      errorCode: "AGENT_RUNTIME_FAILED",
+    });
     throw error;
   }
-  await db
-    .update(aiRuns)
-    .set({
-      status: result.status,
-      outputSnapshot: {
-        output: result.output,
-        stepCount: result.steps,
-        errorCode: result.errorCode,
-      },
-      completedAt: new Date(),
-    })
-    .where(eq(aiRuns.id, sourceRun.id));
-  const [completed] = await db
-    .update(agentRuns)
-    .set({
-      status: result.status,
-      output: result.output,
-      stepCount: result.steps,
-      errorCode: result.errorCode,
-      completedAt: new Date(),
-    })
-    .where(eq(agentRuns.id, run.id))
-    .returning();
-  return completed;
+  return finishRuns({
+    status: result.status,
+    output: result.output,
+    stepCount: result.steps,
+    errorCode: result.errorCode,
+  });
 }
 
 export async function loadAgentRuns(userId: string, agentId: string) {

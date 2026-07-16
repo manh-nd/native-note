@@ -95,4 +95,22 @@ describe("Tool registry", () => {
       ])
     ).toThrow(/invalid ownership/i);
   });
+
+  it("uses a Tool's redacted audit projection without changing model output", async () => {
+    const tools = registry({
+      audit: {
+        mode: "redacted",
+        input: () => ({}),
+        output: () => ({ text: "[REDACTED:SENSITIVE_CONTENT]" }),
+      },
+    });
+
+    await expect(
+      tools.execute("read_current_page", {}, context, ["read_current_page"])
+    ).resolves.toMatchObject({
+      output: { pageId: "page-1", text: "Draft" },
+      auditInput: {},
+      auditOutput: { text: "[REDACTED:SENSITIVE_CONTENT]" },
+    });
+  });
 });

@@ -17,6 +17,13 @@ export type ToolDefinition = {
   ownership: ToolOwnership;
   risk: ToolRisk;
   approval: ToolApproval;
+  audit?:
+    | { mode: "full" }
+    | {
+        mode: "redacted";
+        input: (input: unknown) => unknown;
+        output: (output: unknown) => unknown;
+      };
   authorize: (context: ToolContext, input: unknown) => Promise<boolean>;
   execute: (context: ToolContext, input: unknown) => Promise<unknown>;
 };
@@ -27,6 +34,7 @@ export type ToolSnapshot = Pick<
 > & {
   inputSchema: unknown;
   outputSchema: unknown;
+  auditMode: "full" | "redacted";
 };
 
 export class ToolExecutionError extends Error {
@@ -82,6 +90,7 @@ function snapshot(definition: ToolDefinition): ToolSnapshot {
     approval: definition.approval,
     inputSchema: z.toJSONSchema(definition.inputSchema),
     outputSchema: z.toJSONSchema(definition.outputSchema),
+    auditMode: definition.audit?.mode ?? "full",
   };
 }
 
@@ -110,6 +119,12 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
       typeof definition.execute !== "function"
     )
       throw new Error(`Tool ${definition.name} must declare its executors.`);
+    if (
+      definition.audit?.mode === "redacted" &&
+      (typeof definition.audit.input !== "function" ||
+        typeof definition.audit.output !== "function")
+    )
+      throw new Error(`Tool ${definition.name} has an invalid audit policy.`);
     if (byName.has(definition.name))
       throw new Error(`Duplicate Tool name: ${definition.name}`);
     byName.set(definition.name, definition);
@@ -166,7 +181,20 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
           "TOOL_OUTPUT_INVALID",
           `Tool ${name} returned invalid output.`
         );
-      return { output: output.data, snapshot: snapshot(definition) };
+      const auditInput =
+        definition.audit?.mode === "redacted"
+          ? definition.audit.input(parsedInput.data)
+          : parsedInput.data;
+      const auditOutput =
+        definition.audit?.mode === "redacted"
+          ? definition.audit.output(output.data)
+          : output.data;
+      return {
+        output: output.data,
+        auditInput: redactToolAuditValue(auditInput),
+        auditOutput: redactToolAuditValue(auditOutput),
+        snapshot: snapshot(definition),
+      };
     },
   };
 }

@@ -349,8 +349,8 @@ export const toolCalls = pgTable(
     name: text("name").notNull(),
     input: jsonb("input").notNull(),
     output: jsonb("output"),
-    risk: toolRisk("risk"),
-    approvalState: toolApprovalState("approval_state"),
+    risk: toolRisk("risk").notNull(),
+    approvalState: toolApprovalState("approval_state").notNull(),
     failureCode: text("failure_code"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
@@ -384,9 +384,7 @@ export const aiRuns = pgTable("ai_runs", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),
-  completedAt: timestamp("completed_at", { withTimezone: true })
-    .defaultNow()
-    .notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }).defaultNow(),
 });
 
 export const reviews = pgTable(
