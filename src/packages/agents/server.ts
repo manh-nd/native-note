@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@/db";
 import {
   aiRuns,
+  agentLearningItemRecommendations,
   agentRuns,
   agents,
   pages,
@@ -17,6 +18,7 @@ import {
   AGENT_MAX_STEPS,
   AgentModelError,
   AGENT_TOOLS,
+  CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL,
   createInitialToolRegistry,
   runAgent,
   type AgentHistoryItem,
@@ -203,7 +205,7 @@ const geminiAgentModel: AgentModel = async ({
   const systemInstruction = [
     agentSnapshot.instructions.snapshot,
     skills,
-    "You are a bounded NativeNote Agent. Use only the supplied Tools. Page changes can only be submitted through the create_document_proposal Tool and always require the user to accept the pending DocumentProposal. Never claim that a proposal has already edited a Page, never create a LearningItem, and never perform an action outside the supplied Tools. Return a concise final response when the task is complete.",
+    "You are a bounded NativeNote Agent. Use only the supplied Tools. Page changes can only be submitted through the create_document_proposal Tool and always require the user to accept the pending DocumentProposal. You may recommend a pedagogical LearningItem only through create_learning_item_recommendation; it remains pending until the user approves it, so never claim it is active. Never create an active LearningItem directly or perform an action outside the supplied Tools. Return a concise final response when the task is complete.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -441,20 +443,54 @@ export async function runAgentDefinition({
           );
       },
       audit: async (audit) => {
-        await db.insert(toolCalls).values({
-          agentRunId: run.id,
-          providerCallId: audit.toolCallId,
-          idempotencyKey: audit.idempotencyKey,
-          name: audit.name,
-          input: audit.input,
-          output: audit.output,
-          risk: audit.risk,
-          approvalState: audit.approvalState,
-          failureCode: audit.failureCode,
-          startedAt: audit.startedAt,
-          completedAt: audit.completedAt,
-          durationMs: audit.durationMs,
-          reused: audit.reused,
+        await db.transaction(async (tx) => {
+          await tx.insert(toolCalls).values({
+            agentRunId: run.id,
+            providerCallId: audit.toolCallId,
+            idempotencyKey: audit.idempotencyKey,
+            name: audit.name,
+            input: audit.input,
+            output: audit.output,
+            risk: audit.risk,
+            approvalState: audit.approvalState,
+            failureCode: audit.failureCode,
+            startedAt: audit.startedAt,
+            completedAt: audit.completedAt,
+            durationMs: audit.durationMs,
+            reused: audit.reused,
+          });
+          if (
+            audit.name === CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL &&
+            audit.failureCode === null &&
+            typeof audit.output === "object" &&
+            audit.output !== null &&
+            typeof (audit.output as { recommendationId?: unknown })
+              .recommendationId === "string"
+          ) {
+            const [audited] = await tx
+              .update(agentLearningItemRecommendations)
+              .set({ auditedAt: audit.completedAt })
+              .where(
+                and(
+                  eq(
+                    agentLearningItemRecommendations.id,
+                    (audit.output as { recommendationId: string })
+                      .recommendationId
+                  ),
+                  eq(agentLearningItemRecommendations.agentRunId, run.id),
+                  eq(
+                    agentLearningItemRecommendations.providerToolCallId,
+                    audit.toolCallId
+                  ),
+                  eq(agentLearningItemRecommendations.status, "pending")
+                )
+              )
+              .returning({ id: agentLearningItemRecommendations.id });
+            if (!audited)
+              throw new Error(
+                "LearningItem recommendation audit could not be linked."
+              );
+          }
         });
       },
     });

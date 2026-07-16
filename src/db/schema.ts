@@ -91,6 +91,10 @@ export const toolApprovalState = pgEnum("tool_approval_state", [
   "approved",
   "denied",
 ]);
+export const learningItemRecommendationStatus = pgEnum(
+  "learning_item_recommendation_status",
+  ["pending", "approved", "rejected"]
+);
 
 export const users = pgTable("users", {
   id: text("id")
@@ -407,6 +411,52 @@ export const aiRuns = pgTable("ai_runs", {
   completedAt: timestamp("completed_at", { withTimezone: true }).defaultNow(),
 });
 
+export const agentLearningItemRecommendations = pgTable(
+  "agent_learning_item_recommendations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    pageId: uuid("page_id")
+      .notNull()
+      .references(() => pages.id, { onDelete: "cascade" }),
+    sourceRunId: uuid("source_run_id")
+      .notNull()
+      .references(() => aiRuns.id, { onDelete: "cascade" }),
+    agentRunId: uuid("agent_run_id")
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: "cascade" }),
+    providerToolCallId: text("provider_tool_call_id").notNull(),
+    toolCallIdempotencyKey: text("tool_call_idempotency_key").notNull(),
+    idempotencyScopeId: uuid("idempotency_scope_id").notNull(),
+    category: findingCategory("category").notNull(),
+    originalPattern: text("original_pattern").notNull(),
+    targetExpression: text("target_expression").notNull(),
+    explanation: text("explanation").notNull(),
+    sourceEvidence: text("source_evidence").notNull(),
+    status: learningItemRecommendationStatus("status")
+      .notNull()
+      .default("pending"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    auditedAt: timestamp("audited_at", { withTimezone: true }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("agent_learning_recommendations_user_status_idx").on(
+      table.userId,
+      table.status,
+      table.createdAt
+    ),
+    uniqueIndex("agent_learning_recommendations_idempotency_idx").on(
+      table.idempotencyScopeId,
+      table.toolCallIdempotencyKey
+    ),
+  ]
+);
+
 export const reviews = pgTable(
   "reviews",
   {
@@ -510,6 +560,11 @@ export const learningItems = pgTable(
     findingId: uuid("finding_id")
       .unique()
       .references(() => findings.id, { onDelete: "set null" }),
+    agentRecommendationId: uuid("agent_recommendation_id")
+      .unique()
+      .references(() => agentLearningItemRecommendations.id, {
+        onDelete: "set null",
+      }),
     category: findingCategory("category").notNull(),
     originalPattern: text("original_pattern").notNull(),
     targetExpression: text("target_expression").notNull(),

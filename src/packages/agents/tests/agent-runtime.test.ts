@@ -92,6 +92,63 @@ describe("Agent runtime", () => {
     );
   });
 
+  it("audits a Tool-created approval request as pending", async () => {
+    const approvalTools = createToolRegistry([
+      {
+        name: "create_learning_item_recommendation",
+        description: "Create a pending LearningItem recommendation.",
+        inputSchema: z.object({ evidence: z.string() }),
+        outputSchema: z.object({
+          recommendationId: z.string(),
+          status: z.literal("pending"),
+        }),
+        ownership: "current_user",
+        risk: "medium",
+        approval: "required_pending_result",
+        authorize: async () => true,
+        execute: async () => ({
+          recommendationId: "recommendation-1",
+          status: "pending" as const,
+        }),
+      },
+    ]);
+    const audit = vi.fn(async () => undefined);
+    const approvalDefinition = {
+      ...definition,
+      allowedTools: ["create_learning_item_recommendation"],
+    };
+
+    await expect(
+      runAgent({
+        definition: approvalDefinition,
+        prompt: "Recommend a lesson.",
+        context: { userId: "user-1", currentPageId: "page-1" },
+        tools: approvalTools,
+        model: vi
+          .fn()
+          .mockResolvedValueOnce({
+            text: null,
+            calls: [
+              {
+                id: "call-approval",
+                name: "create_learning_item_recommendation",
+                input: { evidence: "I has a plan." },
+              },
+            ],
+          })
+          .mockResolvedValueOnce({ text: "Recommendation ready.", calls: [] }),
+        audit,
+      })
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "create_learning_item_recommendation",
+        approvalState: "pending",
+        risk: "medium",
+      })
+    );
+  });
+
   it("stops at the configured maximum and never exceeds the platform limit of six", async () => {
     const model = vi.fn(async () => ({
       text: null,

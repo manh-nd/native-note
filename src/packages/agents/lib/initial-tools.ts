@@ -3,11 +3,14 @@ import { z } from "zod";
 import { db } from "@/db";
 import { learningItems, pages, workspaces } from "@/db/schema";
 import type { CreateAgentDocumentProposalInput } from "@/packages/document-proposals";
+import { learningItemRecommendationDraftSchema } from "../learning-item-contract";
 import { createToolRegistry } from "./tool-registry";
 
 export const READ_CURRENT_PAGE_TOOL = "read_current_page";
 export const SEARCH_LEARNING_MEMORY_TOOL = "search_learning_memory";
 export const CREATE_DOCUMENT_PROPOSAL_TOOL = "create_document_proposal";
+export const CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL =
+  "create_learning_item_recommendation";
 export const READ_ONLY_AGENT_TOOLS = [
   READ_CURRENT_PAGE_TOOL,
   SEARCH_LEARNING_MEMORY_TOOL,
@@ -15,6 +18,7 @@ export const READ_ONLY_AGENT_TOOLS = [
 export const AGENT_TOOLS = [
   ...READ_ONLY_AGENT_TOOLS,
   CREATE_DOCUMENT_PROPOSAL_TOOL,
+  CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL,
 ] as const;
 
 const readPageInput = z.object({}).strict();
@@ -118,6 +122,12 @@ const documentProposalOutput = z.object({
   status: z.enum(["pending", "accepted", "rejected", "stale"]),
 });
 
+const learningItemRecommendationInput = learningItemRecommendationDraftSchema;
+const learningItemRecommendationOutput = z.object({
+  recommendationId: z.string().uuid(),
+  status: z.literal("pending"),
+});
+
 async function loadOwnedCurrentPage(userId: string, pageId: string) {
   const [page] = await db
     .select({
@@ -146,10 +156,26 @@ export function createInitialToolRegistry({
       await import("@/packages/document-proposals");
     return createAgentDocumentProposal(input);
   },
+  createLearningItemRecommendation = async (input) => {
+    const { createAgentLearningItemRecommendation } =
+      await import("@/packages/agents/learning-items");
+    return createAgentLearningItemRecommendation(input);
+  },
 }: {
   createDocumentProposal?: (
     input: CreateAgentDocumentProposalInput
   ) => Promise<z.infer<typeof documentProposalOutput>>;
+  createLearningItemRecommendation?: (
+    input: z.infer<typeof learningItemRecommendationInput> & {
+      userId: string;
+      pageId: string;
+      sourceRunId: string;
+      agentRunId: string;
+      providerToolCallId: string;
+      toolCallIdempotencyKey: string;
+      idempotencyScopeId: string;
+    }
+  ) => Promise<z.infer<typeof learningItemRecommendationOutput>>;
 } = {}) {
   return createToolRegistry([
     {
@@ -267,6 +293,47 @@ export function createInitialToolRegistry({
             baseContentRevision: input.baseContentRevision,
             operations: input.operations,
           },
+        });
+      },
+    },
+    {
+      name: CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL,
+      description:
+        "Recommend a pedagogical LearningItem with source evidence. This creates only a pending recommendation; the user must approve it before any active LearningItem exists.",
+      inputSchema: learningItemRecommendationInput,
+      outputSchema: learningItemRecommendationOutput,
+      ownership: "current_user",
+      risk: "medium",
+      approval: "required_pending_result",
+      audit: {
+        mode: "redacted",
+        input: (rawInput) => {
+          const input = learningItemRecommendationInput.parse(rawInput);
+          return {
+            category: input.category,
+            originalPattern: "[REDACTED:SENSITIVE_LEARNING_CONTENT]",
+            targetExpression: "[REDACTED:SENSITIVE_LEARNING_CONTENT]",
+            explanation: "[REDACTED:SENSITIVE_LEARNING_CONTENT]",
+            sourceEvidence: "[REDACTED:SENSITIVE_LEARNING_CONTENT]",
+          };
+        },
+        output: (rawOutput) =>
+          learningItemRecommendationOutput.parse(rawOutput),
+      },
+      authorize: async (context) =>
+        Boolean(context.userId && context.currentPageId && context.provenance),
+      execute: async (context, rawInput) => {
+        const input = learningItemRecommendationInput.parse(rawInput);
+        const provenance = context.provenance!;
+        return createLearningItemRecommendation({
+          userId: context.userId,
+          pageId: context.currentPageId,
+          sourceRunId: provenance.sourceRunId,
+          agentRunId: provenance.agentRunId,
+          providerToolCallId: provenance.providerToolCallId,
+          toolCallIdempotencyKey: provenance.idempotencyKey,
+          idempotencyScopeId: provenance.idempotencyScopeId,
+          ...input,
         });
       },
     },

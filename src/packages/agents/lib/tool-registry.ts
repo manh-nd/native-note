@@ -2,7 +2,8 @@ import { z } from "zod";
 
 export type ToolOwnership = "current_user";
 export type ToolRisk = "low" | "medium" | "high";
-export type ToolApproval = "not_required" | "required";
+export type ToolApproval =
+  "not_required" | "required_before_execution" | "required_pending_result";
 
 export type AgentToolCallProvenance = {
   sourceRunId: string;
@@ -39,8 +40,9 @@ export type ToolDefinition = {
 
 export type ToolSnapshot = Pick<
   ToolDefinition,
-  "name" | "description" | "ownership" | "risk" | "approval"
+  "name" | "description" | "ownership" | "risk"
 > & {
+  approval: "not_required" | "required";
   inputSchema: unknown;
   outputSchema: unknown;
   auditMode: "full" | "redacted";
@@ -96,7 +98,8 @@ function snapshot(definition: ToolDefinition): ToolSnapshot {
     description: definition.description,
     ownership: definition.ownership,
     risk: definition.risk,
-    approval: definition.approval,
+    approval:
+      definition.approval === "not_required" ? "not_required" : "required",
     inputSchema: z.toJSONSchema(definition.inputSchema),
     outputSchema: z.toJSONSchema(definition.outputSchema),
     auditMode: definition.audit?.mode ?? "full",
@@ -121,7 +124,15 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
       throw new Error(`Tool ${definition.name} has invalid ownership.`);
     if (!(["low", "medium", "high"] as const).includes(definition.risk))
       throw new Error(`Tool ${definition.name} has invalid risk.`);
-    if (!(["not_required", "required"] as const).includes(definition.approval))
+    if (
+      !(
+        [
+          "not_required",
+          "required_before_execution",
+          "required_pending_result",
+        ] as const
+      ).includes(definition.approval)
+    )
       throw new Error(`Tool ${definition.name} has invalid approval policy.`);
     if (
       typeof definition.authorize !== "function" ||
@@ -170,7 +181,7 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
           "TOOL_OWNERSHIP_DENIED",
           `Tool ${name} cannot access this resource.`
         );
-      if (definition.approval === "required")
+      if (definition.approval === "required_before_execution")
         throw new ToolExecutionError(
           "TOOL_APPROVAL_REQUIRED",
           `Tool ${name} requires approval.`

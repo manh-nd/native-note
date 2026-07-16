@@ -290,6 +290,97 @@ describe("Agent definitions", () => {
     );
   });
 
+  it("makes a recommendation actionable only in the same transaction as its ToolCall audit", async () => {
+    const agent = {
+      id: "agent-1",
+      name: "Coach",
+      skillVersionIds: [],
+      allowedTools: ["create_learning_item_recommendation"],
+      modelPolicy: { model: "model-1" },
+      maxSteps: 2,
+    };
+    database.state.selects.push(
+      [
+        {
+          agent,
+          instructionsPageId: "instructions-1",
+          instructionsContentRevision: 4,
+          instructionsSnapshot: "Recommend useful lessons.",
+        },
+      ],
+      [{ id: "page-1", contentRevision: 2 }]
+    );
+    database.state.inserts.push(
+      [{ id: "source-run-1" }],
+      [{ id: "run-1" }],
+      []
+    );
+    database.state.updates.push(
+      [],
+      [{ id: "recommendation-1" }],
+      [],
+      [],
+      [{ id: "run-1", status: "completed", output: "Ready." }]
+    );
+    const registry = createToolRegistry([
+      {
+        name: "create_learning_item_recommendation",
+        description: "Create a pending LearningItem recommendation.",
+        inputSchema: z.object({ lesson: z.string() }),
+        outputSchema: z.object({
+          recommendationId: z.string(),
+          status: z.literal("pending"),
+        }),
+        ownership: "current_user",
+        risk: "medium",
+        approval: "required_pending_result",
+        authorize: async () => true,
+        execute: async () => ({
+          recommendationId: "recommendation-1",
+          status: "pending" as const,
+        }),
+      },
+    ]);
+    const model = vi
+      .fn()
+      .mockResolvedValueOnce({
+        text: null,
+        calls: [
+          {
+            id: "provider-call-1",
+            name: "create_learning_item_recommendation",
+            input: { lesson: "Use have with I." },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ text: "Ready.", calls: [] });
+
+    await expect(
+      runAgentDefinition({
+        userId: "user-1",
+        agentId: "agent-1",
+        pageId: "page-1",
+        prompt: "Recommend a lesson.",
+        model,
+        registry,
+        isCancellationRequested: async () => false,
+      })
+    ).resolves.toMatchObject({ status: "completed" });
+    expect(database.state.updateValues).toContainEqual({
+      auditedAt: expect.any(Date),
+    });
+    expect(database.state.insertValues).toContainEqual(
+      expect.objectContaining({
+        name: "create_learning_item_recommendation",
+        approvalState: "pending",
+        output: {
+          recommendationId: "recommendation-1",
+          status: "pending",
+        },
+      })
+    );
+  });
+
   it("returns owned run history with model, timing, steps, and redacted ToolCalls", async () => {
     const createdAt = new Date("2026-07-16T10:00:00Z");
     const completedAt = new Date("2026-07-16T10:00:02Z");

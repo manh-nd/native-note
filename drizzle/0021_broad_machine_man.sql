@@ -1,0 +1,1 @@
+ALTER TABLE "agent_learning_item_recommendations" ADD COLUMN "audited_at" timestamp with time zone;

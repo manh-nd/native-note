@@ -279,7 +279,10 @@ export async function runAgent({
           input: result.auditInput,
           output: result.auditOutput,
           risk: result.snapshot.risk,
-          approvalState: "not_required",
+          approvalState:
+            result.snapshot.approval === "required"
+              ? "pending"
+              : "not_required",
           startedAt,
           completedAt,
           durationMs: completedAt.getTime() - startedAt.getTime(),
@@ -291,7 +294,10 @@ export async function runAgent({
           input: result.auditInput,
           output: result.output,
           risk: result.snapshot.risk,
-          approvalState: "not_required",
+          approvalState:
+            result.snapshot.approval === "required"
+              ? "pending"
+              : "not_required",
         });
         history.push({
           role: "tool",
