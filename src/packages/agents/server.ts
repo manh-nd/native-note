@@ -2,6 +2,7 @@ import type { Content, FunctionDeclaration, Part } from "@google/genai";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import {
+  aiRuns,
   agentRuns,
   agents,
   pages,
@@ -240,7 +241,7 @@ export async function runAgentDefinition({
     throw new ApiError(404, "Không tìm thấy Agent.", "AGENT_NOT_FOUND");
 
   const [currentPage] = await db
-    .select({ id: pages.id })
+    .select({ id: pages.id, contentRevision: pages.contentRevision })
     .from(pages)
     .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
     .where(
@@ -291,9 +292,29 @@ export async function runAgentDefinition({
     maxSteps: owned.agent.maxSteps,
   };
   const toolSnapshots = registry.snapshots(definition.allowedTools);
+  const [sourceRun] = await db
+    .insert(aiRuns)
+    .values({
+      pageId,
+      creatorId: userId,
+      sourceKind: "agent",
+      action: "manual_agent",
+      model: definition.modelPolicy.model,
+      status: "running",
+      inputSnapshot: prompt,
+      outputSnapshot: {},
+      contentRevision: currentPage.contentRevision,
+      policySnapshot: { agent: definition, tools: toolSnapshots },
+      instructionsPageId: definition.instructions.pageId,
+      instructionsContentRevision: definition.instructions.contentRevision,
+      instructionsSnapshot: definition.instructions.snapshot,
+    })
+    .returning();
+  if (!sourceRun) throw new Error("AI run was not created.");
   const [run] = await db
     .insert(agentRuns)
     .values({
+      sourceRunId: sourceRun.id,
       agentId,
       pageId,
       creatorId: userId,
@@ -331,6 +352,14 @@ export async function runAgentDefinition({
     });
   } catch (error) {
     await db
+      .update(aiRuns)
+      .set({
+        status: "failed",
+        outputSnapshot: { errorCode: "AGENT_RUNTIME_FAILED" },
+        completedAt: new Date(),
+      })
+      .where(eq(aiRuns.id, sourceRun.id));
+    await db
       .update(agentRuns)
       .set({
         status: "failed",
@@ -340,6 +369,18 @@ export async function runAgentDefinition({
       .where(eq(agentRuns.id, run.id));
     throw error;
   }
+  await db
+    .update(aiRuns)
+    .set({
+      status: result.status,
+      outputSnapshot: {
+        output: result.output,
+        stepCount: result.steps,
+        errorCode: result.errorCode,
+      },
+      completedAt: new Date(),
+    })
+    .where(eq(aiRuns.id, sourceRun.id));
   const [completed] = await db
     .update(agentRuns)
     .set({

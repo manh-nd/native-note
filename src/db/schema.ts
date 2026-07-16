@@ -49,8 +49,14 @@ export const aiRunSourceKind = pgEnum("ai_run_source_kind", [
   "block",
   "review",
   "skill",
+  "agent",
 ]);
-export const aiRunStatus = pgEnum("ai_run_status", ["completed", "failed"]);
+export const aiRunStatus = pgEnum("ai_run_status", [
+  "running",
+  "completed",
+  "failed",
+  "step_limit",
+]);
 export const documentProposalStatus = pgEnum("document_proposal_status", [
   "pending",
   "accepted",
@@ -79,7 +85,9 @@ export const agentRunStatus = pgEnum("agent_run_status", [
 export const toolRisk = pgEnum("tool_risk", ["low", "medium", "high"]);
 export const toolApprovalState = pgEnum("tool_approval_state", [
   "not_required",
-  "required",
+  "pending",
+  "approved",
+  "denied",
 ]);
 
 export const users = pgTable("users", {
@@ -297,6 +305,9 @@ export const agentRuns = pgTable(
   "agent_runs",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    sourceRunId: uuid("source_run_id")
+      .notNull()
+      .references(() => aiRuns.id, { onDelete: "cascade" }),
     agentId: uuid("agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "cascade" }),
@@ -321,6 +332,7 @@ export const agentRuns = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (table) => [
+    uniqueIndex("agent_runs_source_run_idx").on(table.sourceRunId),
     index("agent_runs_agent_created_idx").on(table.agentId, table.createdAt),
     index("agent_runs_page_created_idx").on(table.pageId, table.createdAt),
   ]

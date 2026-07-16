@@ -68,11 +68,31 @@ describe("Tool registry", () => {
         query: "grammar",
         apiKey: "secret-key",
         nested: { authorization: "Bearer secret", value: "safe" },
+        text: "Use apiKey=abc123 and Bearer xyz987 in this Page.",
       })
     ).toEqual({
       query: "grammar",
       apiKey: "[REDACTED]",
       nested: { authorization: "[REDACTED]", value: "safe" },
+      text: "Use [REDACTED] and [REDACTED] in this Page.",
     });
+  });
+
+  it("rejects malformed Tool definitions at registration", () => {
+    expect(() =>
+      createToolRegistry([
+        {
+          name: "unsafe_tool",
+          description: "Unsafe metadata.",
+          inputSchema: z.object({}),
+          outputSchema: z.object({}),
+          ownership: "workspace_member",
+          risk: "unknown",
+          approval: "sometimes",
+          authorize: async () => true,
+          execute: async () => ({}),
+        } as never,
+      ])
+    ).toThrow(/invalid ownership/i);
   });
 });

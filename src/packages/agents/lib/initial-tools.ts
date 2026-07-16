@@ -38,9 +38,15 @@ const searchOutput = z.object({
   ),
 });
 
-async function ownsCurrentPage(userId: string, pageId: string) {
-  const [owned] = await db
-    .select({ id: pages.id })
+async function loadOwnedCurrentPage(userId: string, pageId: string) {
+  const [page] = await db
+    .select({
+      pageId: pages.id,
+      title: pages.title,
+      contentRevision: pages.contentRevision,
+      plainText: pages.plainText,
+      content: pages.content,
+    })
     .from(pages)
     .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
     .where(
@@ -51,7 +57,7 @@ async function ownsCurrentPage(userId: string, pageId: string) {
       )
     )
     .limit(1);
-  return Boolean(owned);
+  return page ?? null;
 }
 
 export function createInitialToolRegistry() {
@@ -65,27 +71,10 @@ export function createInitialToolRegistry() {
       ownership: "current_user",
       risk: "low",
       approval: "not_required",
-      authorize: ({ userId, currentPageId }) =>
-        ownsCurrentPage(userId, currentPageId),
+      authorize: async ({ userId, currentPageId }) =>
+        Boolean(await loadOwnedCurrentPage(userId, currentPageId)),
       execute: async ({ userId, currentPageId }) => {
-        const [page] = await db
-          .select({
-            pageId: pages.id,
-            title: pages.title,
-            contentRevision: pages.contentRevision,
-            plainText: pages.plainText,
-            content: pages.content,
-          })
-          .from(pages)
-          .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
-          .where(
-            and(
-              eq(pages.id, currentPageId),
-              eq(workspaces.userId, userId),
-              isNull(pages.deletedAt)
-            )
-          )
-          .limit(1);
+        const page = await loadOwnedCurrentPage(userId, currentPageId);
         if (!page) throw new Error("Current Page is unavailable.");
         return page;
       },

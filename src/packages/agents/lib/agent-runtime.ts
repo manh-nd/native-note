@@ -61,7 +61,7 @@ export type ToolCallAudit = {
   input: unknown;
   output: unknown | null;
   risk: ToolRisk | null;
-  approvalState: "not_required" | "required" | null;
+  approvalState: "not_required" | "pending" | "approved" | "denied";
   startedAt: Date;
   completedAt: Date;
   durationMs: number;
@@ -146,7 +146,7 @@ export async function runReadOnlyAgent({
           input: redactToolAuditValue(call.input),
           output: redactToolAuditValue(result.output),
           risk: result.snapshot.risk,
-          approvalState: result.snapshot.approval,
+          approvalState: "not_required",
           startedAt,
           completedAt,
           durationMs: completedAt.getTime() - startedAt.getTime(),
@@ -173,7 +173,8 @@ export async function runReadOnlyAgent({
           input: redactToolAuditValue(call.input),
           output: null,
           risk: toolSnapshot?.risk ?? null,
-          approvalState: toolSnapshot?.approval ?? null,
+          approvalState:
+            toolSnapshot?.approval === "required" ? "pending" : "not_required",
           startedAt,
           completedAt,
           durationMs: completedAt.getTime() - startedAt.getTime(),

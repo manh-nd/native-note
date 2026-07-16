@@ -158,10 +158,15 @@ describe("Agent definitions", () => {
         },
       ]
     );
-    database.state.inserts.push([{ id: "run-1" }], []);
-    database.state.updates.push([
-      { id: "run-1", status: "completed", output: "Looks good." },
-    ]);
+    database.state.inserts.push(
+      [{ id: "source-run-1" }],
+      [{ id: "run-1" }],
+      []
+    );
+    database.state.updates.push(
+      [],
+      [{ id: "run-1", status: "completed", output: "Looks good." }]
+    );
     const registry = createToolRegistry([
       {
         name: "read_current_page",
@@ -201,6 +206,17 @@ describe("Agent definitions", () => {
     ).resolves.toMatchObject({ status: "completed", output: "Looks good." });
 
     expect(database.state.insertValues[0]).toMatchObject({
+      sourceKind: "agent",
+      status: "running",
+      model: "model-1",
+      instructionsPageId: "instructions-1",
+      policySnapshot: {
+        agent: expect.objectContaining({ id: "agent-1" }),
+        tools: [expect.objectContaining({ name: "read_current_page" })],
+      },
+    });
+    expect(database.state.insertValues[1]).toMatchObject({
+      sourceRunId: "source-run-1",
       agentSnapshot: expect.objectContaining({
         instructions: {
           pageId: "instructions-1",
@@ -214,7 +230,7 @@ describe("Agent definitions", () => {
       }),
       toolSnapshots: [expect.objectContaining({ name: "read_current_page" })],
     });
-    expect(database.state.insertValues[1]).toMatchObject({
+    expect(database.state.insertValues[2]).toMatchObject({
       agentRunId: "run-1",
       providerCallId: "provider-call-1",
       input: { apiKey: "[REDACTED]" },
@@ -222,6 +238,14 @@ describe("Agent definitions", () => {
       failureCode: null,
     });
     expect(database.state.updateValues[0]).toMatchObject({
+      status: "completed",
+      outputSnapshot: {
+        output: "Looks good.",
+        stepCount: 2,
+        errorCode: null,
+      },
+    });
+    expect(database.state.updateValues[1]).toMatchObject({
       status: "completed",
       output: "Looks good.",
       stepCount: 2,

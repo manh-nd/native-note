@@ -46,9 +46,24 @@ export class ToolExecutionError extends Error {
 }
 
 const SECRET_FIELD = /(?:api[_-]?key|authorization|password|secret|token)$/i;
+const SECRET_TEXT_PATTERNS = [
+  /\bBearer\s+[^\s,;]+/gi,
+  /\b(?:api[_ -]?key|authorization|password|secret|token)\s*[:=]\s*[^\s,;]+/gi,
+  /\bAIza[0-9A-Za-z_-]{20,}\b/g,
+  /\bsk-[0-9A-Za-z_-]{16,}\b/g,
+  /\beyJ[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\b/g,
+];
+
+function redactSecretText(value: string) {
+  return SECRET_TEXT_PATTERNS.reduce(
+    (redacted, pattern) => redacted.replace(pattern, "[REDACTED]"),
+    value
+  );
+}
 
 export function redactToolAuditValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactToolAuditValue);
+  if (typeof value === "string") return redactSecretText(value);
   if (typeof value !== "object" || value === null) return value;
   return Object.fromEntries(
     Object.entries(value).map(([key, child]) => [
@@ -77,6 +92,24 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
       throw new Error(`Invalid Tool name: ${definition.name}`);
     if (!definition.description.trim())
       throw new Error(`Tool ${definition.name} must have a description.`);
+    if (
+      !definition.inputSchema ||
+      typeof definition.inputSchema.safeParse !== "function" ||
+      !definition.outputSchema ||
+      typeof definition.outputSchema.safeParse !== "function"
+    )
+      throw new Error(`Tool ${definition.name} must declare Zod schemas.`);
+    if (definition.ownership !== "current_user")
+      throw new Error(`Tool ${definition.name} has invalid ownership.`);
+    if (!(["low", "medium", "high"] as const).includes(definition.risk))
+      throw new Error(`Tool ${definition.name} has invalid risk.`);
+    if (!(["not_required", "required"] as const).includes(definition.approval))
+      throw new Error(`Tool ${definition.name} has invalid approval policy.`);
+    if (
+      typeof definition.authorize !== "function" ||
+      typeof definition.execute !== "function"
+    )
+      throw new Error(`Tool ${definition.name} must declare its executors.`);
     if (byName.has(definition.name))
       throw new Error(`Duplicate Tool name: ${definition.name}`);
     byName.set(definition.name, definition);
