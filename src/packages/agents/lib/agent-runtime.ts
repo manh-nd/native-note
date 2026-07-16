@@ -119,7 +119,7 @@ export type AgentRunResult = {
   toolSnapshots: ToolSnapshot[];
 };
 
-export async function runReadOnlyAgent({
+export async function runAgent({
   definition,
   prompt,
   context,
@@ -130,6 +130,7 @@ export async function runReadOnlyAgent({
   findCompletedToolCallByIdempotencyKey,
   isCancellationRequested,
   onProgress,
+  provenance,
 }: {
   definition: AgentDefinitionSnapshot;
   prompt: string;
@@ -146,6 +147,10 @@ export async function runReadOnlyAgent({
     steps: number;
     modelAttempts: number;
   }) => Promise<void>;
+  provenance?: Omit<
+    NonNullable<ToolContext["provenance"]>,
+    "providerToolCallId" | "idempotencyKey"
+  >;
 }): Promise<AgentRunResult> {
   const maxSteps = Math.min(Math.max(definition.maxSteps, 1), AGENT_MAX_STEPS);
   const agentSnapshot = {
@@ -254,7 +259,16 @@ export async function runReadOnlyAgent({
         const result = await tools.execute(
           call.name,
           call.input,
-          context,
+          {
+            ...context,
+            provenance: provenance
+              ? {
+                  ...provenance,
+                  providerToolCallId: call.id,
+                  idempotencyKey,
+                }
+              : undefined,
+          },
           agentSnapshot.allowedTools
         );
         const completedAt = new Date();

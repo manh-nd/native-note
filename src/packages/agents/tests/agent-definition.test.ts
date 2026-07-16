@@ -91,7 +91,7 @@ describe("Agent definitions", () => {
     database.state.updateValues = [];
   });
 
-  it("persists owned Instructions, published Skills, read-only Tools, model policy, and bounded steps", async () => {
+  it("persists owned Instructions, published Skills, allowed Tools, model policy, and bounded steps", async () => {
     const created = { id: "agent-1", name: "Coach" };
     database.state.selects.push(
       [{ id: "instructions-1" }],
@@ -105,7 +105,11 @@ describe("Agent definitions", () => {
         name: "Coach",
         instructionsPageId: "instructions-1",
         skillVersionIds: ["version-1"],
-        allowedTools: ["read_current_page", "search_learning_memory"],
+        allowedTools: [
+          "read_current_page",
+          "search_learning_memory",
+          "create_document_proposal",
+        ],
         modelPolicy: { model: "model-1" },
         maxSteps: 4,
       })
@@ -114,7 +118,11 @@ describe("Agent definitions", () => {
       creatorId: "user-1",
       instructionsPageId: "instructions-1",
       skillVersionIds: ["version-1"],
-      allowedTools: ["read_current_page", "search_learning_memory"],
+      allowedTools: [
+        "read_current_page",
+        "search_learning_memory",
+        "create_document_proposal",
+      ],
       modelPolicy: { model: "model-1" },
       maxSteps: 4,
     });

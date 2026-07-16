@@ -570,6 +570,15 @@ button {
   box-decoration-break: clone;
   padding-inline: 1px;
 }
+.document-proposal-attribute-change {
+  outline: 2px solid color-mix(in oklch, var(--primary) 60%, transparent);
+  outline-offset: 2px;
+}
+.document-proposal-insertion {
+  display: block;
+  margin-block: 4px;
+  white-space: pre-wrap;
+}
 
 .coach-panel {
   position: sticky;

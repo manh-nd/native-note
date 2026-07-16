@@ -9,6 +9,7 @@ import {
   selectionSourcesForOperations,
   selectionSourcesForStaleOperations,
   selectionWordDiff,
+  showDocumentProposalPreview,
   type SelectionAiSegment,
 } from "./selection-ai";
 
@@ -123,6 +124,83 @@ describe("canonical plain-text index", () => {
 });
 
 describe("selection diff and apply", () => {
+  it("previews every Agent document operation as an editor decoration", () => {
+    const editor = makeEditor({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          attrs: { blockId: "replace" },
+          content: [{ type: "text", text: "Old text" }],
+        },
+        {
+          type: "paragraph",
+          attrs: { blockId: "insert" },
+          content: [{ type: "text", text: "Insert after me" }],
+        },
+        {
+          type: "heading",
+          attrs: { blockId: "attributes", level: 2 },
+          content: [{ type: "text", text: "Heading" }],
+        },
+        {
+          type: "paragraph",
+          attrs: { blockId: "delete" },
+          content: [{ type: "text", text: "Delete me" }],
+        },
+      ],
+    });
+
+    expect(
+      showDocumentProposalPreview(editor, {
+        baseContentRevision: 1,
+        operations: [
+          {
+            type: "replace-text",
+            target: {
+              blockId: "replace",
+              expectedText: "Old text",
+              from: 0,
+              to: 3,
+            },
+            text: "New",
+          },
+          {
+            type: "insert-blocks-after",
+            target: { blockId: "insert", expectedText: "Insert after me" },
+            blocks: [
+              {
+                type: "paragraph",
+                attrs: { blockId: "inserted" },
+                content: [{ type: "text", text: "Inserted block" }],
+              },
+            ],
+          },
+          {
+            type: "set-block-attributes",
+            target: { blockId: "attributes", expectedText: "Heading" },
+            attributes: { level: 3 },
+          },
+          {
+            type: "delete-block",
+            target: { blockId: "delete", expectedText: "Delete me" },
+          },
+        ],
+      })
+    ).toBe(true);
+    expect(
+      editor.view.dom.querySelector(".selection-ai-addition")?.textContent
+    ).toContain("New");
+    expect(editor.view.dom.textContent).toContain("Inserted block");
+    expect(
+      editor.view.dom.querySelector(".document-proposal-attribute-change")
+    ).not.toBeNull();
+    expect(
+      editor.view.dom.querySelector('[data-blockid="delete"]')?.className
+    ).toContain("selection-ai-removal");
+    editor.destroy();
+  });
+
   it("rebuilds a pending proposal preview from its stable block target after reload", () => {
     const editor = makeEditor({
       type: "doc",

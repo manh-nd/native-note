@@ -81,6 +81,7 @@ import {
   selectionSourcesForOperations,
   selectionSnapshot,
   selectionAiResultsFromOperations,
+  showDocumentProposalPreview,
   showSelectionAiPreview,
   preservedEditorSelection,
   type SelectionAiResult,
@@ -117,6 +118,8 @@ type LoadedDocumentProposal = Pick<
   | "action"
   | "sourceKind"
   | "status"
+  | "agentId"
+  | "agentPrompt"
 >;
 type StaleProposalRecovery = Pick<
   SelectionRequestContext,
@@ -235,16 +238,12 @@ function isLoadedSelectionProposal(
   );
 }
 
-function isLoadedBlockProposal(proposal: LoadedDocumentProposal) {
-  return proposal.sourceKind === "block";
+function isLoadedCoachPanelProposal(proposal: LoadedDocumentProposal) {
+  return proposal.sourceKind === "block" || proposal.sourceKind === "agent";
 }
 
-function blockProposalTarget(batch: DocumentOperationBatch) {
-  const operation = batch.operations[0];
-  return operation?.type === "replace-text" ||
-    operation?.type === "insert-blocks-after"
-    ? operation.target
-    : null;
+function coachPanelProposalTarget(batch: DocumentOperationBatch) {
+  return batch.operations[0]?.target ?? null;
 }
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -981,12 +980,12 @@ export function WritingWorkspace({
       .then(({ page, proposals }) => {
         if (controller.signal.aborted) return;
         setStaleProposalRecovery(null);
-        const blockProposals = proposals.filter(isLoadedBlockProposal);
+        const blockProposals = proposals.filter(isLoadedCoachPanelProposal);
         const blockProposal =
           blockProposals.find((candidate) => candidate.status === "pending") ??
           blockProposals[0];
         const blockTarget = blockProposal
-          ? blockProposalTarget(blockProposal.operations)
+          ? coachPanelProposalTarget(blockProposal.operations)
           : null;
         if (blockProposal && blockTarget) {
           setTransform({
@@ -1003,7 +1002,19 @@ export function WritingWorkspace({
               blockSnapshot(editor, blockTarget.blockId) !==
                 blockTarget.expectedText,
             action: blockProposal.action,
+            agentRegeneration:
+              blockProposal.sourceKind === "agent" &&
+              blockProposal.agentId &&
+              blockProposal.agentPrompt
+                ? {
+                    agentId: blockProposal.agentId,
+                    prompt: blockProposal.agentPrompt,
+                  }
+                : undefined,
           });
+          if (blockProposal.status === "pending") {
+            showDocumentProposalPreview(editor, blockProposal.operations);
+          }
         }
         const selectionProposals = proposals.filter(isLoadedSelectionProposal);
         const proposal =
@@ -1549,6 +1560,7 @@ export function WritingWorkspace({
         await api(`/api/document-proposals/${transform.proposalId}/reject`, {
           method: "POST",
         });
+        clearSelectionAiPreview(editor);
         setTransform(null);
         setProposalReloadKey((value) => value + 1);
       } catch (cause) {
@@ -1562,10 +1574,15 @@ export function WritingWorkspace({
       const currentPage = await flushEditor();
       if (!currentPage) return;
       if (
-        currentPage.contentRevision !== transform.baseContentRevision ||
-        !transform.snapshot ||
+        transform.snapshot === undefined ||
+        transform.baseContentRevision === undefined ||
         !transform.blockId ||
-        blockSnapshot(editor, transform.blockId) !== transform.snapshot
+        isAiBlockResultStale(
+          blockSnapshot(editor, transform.blockId),
+          currentPage.contentRevision,
+          transform.snapshot,
+          transform.baseContentRevision
+        )
       ) {
         setTransform({ ...transform, stale: true });
         return;
@@ -1616,7 +1633,33 @@ export function WritingWorkspace({
     }
   }
 
-  function regenerateBlockTransform() {
+  async function regenerateBlockTransform() {
+    if (!editor) return;
+    if (transform?.agentRegeneration) {
+      setReviewing(true);
+      setError("");
+      clearSelectionAiPreview(editor);
+      setTransform(null);
+      try {
+        await api(`/api/agents/${transform.agentRegeneration.agentId}/runs`, {
+          method: "POST",
+          body: JSON.stringify({
+            pageId: activePage.id,
+            prompt: transform.agentRegeneration.prompt,
+          }),
+        });
+        setProposalReloadKey((value) => value + 1);
+      } catch (cause) {
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Không thể tạo lại đề xuất Agent."
+        );
+      } finally {
+        setReviewing(false);
+      }
+      return;
+    }
     if (
       !transform?.blockId ||
       !transform.action ||
@@ -1991,7 +2034,10 @@ export function WritingWorkspace({
               onFinding={handleFinding}
               onRegenerateTransform={regenerateBlockTransform}
               onTransform={applyTransform}
-              onCloseTransform={() => setTransform(null)}
+              onCloseTransform={() => {
+                if (editor) clearSelectionAiPreview(editor);
+                setTransform(null);
+              }}
             />
             {slash.open && (
               <SlashCommandMenu

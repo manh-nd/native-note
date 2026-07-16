@@ -5,7 +5,10 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { Extension } from "@tiptap/core";
 import { diffWordsWithSpace } from "diff";
 import { BLOCK_ID_ATTRIBUTE } from "./extensions";
-import type { DocumentOperationBatch } from "@/packages/document-editor";
+import {
+  plainTextFromDocumentBlocks,
+  type DocumentOperationBatch,
+} from "@/packages/document-editor";
 
 export const selectionWordDiff = diffWordsWithSpace;
 const preservedSelections = new WeakMap<Editor, { from: number; to: number }>();
@@ -261,6 +264,138 @@ export function showSelectionAiPreview(
       DecorationSet.create(editor.state.doc, decorations)
     )
   );
+}
+
+function proposalTarget(
+  editor: Editor,
+  blockId: string
+): {
+  node: ProseMirrorNode;
+  pos: number;
+  textFrom: number;
+  text: string;
+} | null {
+  let target: { node: ProseMirrorNode; pos: number } | null = null;
+  editor.state.doc.descendants((node, pos) => {
+    if (node.attrs[BLOCK_ID_ATTRIBUTE] !== blockId) return true;
+    target = { node, pos };
+    return false;
+  });
+  if (!target) return null;
+  const located = target as { node: ProseMirrorNode; pos: number };
+  if (located.node.isTextblock) {
+    return {
+      ...located,
+      textFrom: located.pos + 1,
+      text: textOf(located.node),
+    };
+  }
+  let textNode: ProseMirrorNode | null = null;
+  let textPos = located.pos;
+  located.node.descendants((node, childPos) => {
+    if (!node.isTextblock) return true;
+    textNode = node;
+    textPos = located.pos + 1 + childPos;
+    return false;
+  });
+  return textNode
+    ? { ...located, textFrom: textPos + 1, text: textOf(textNode) }
+    : null;
+}
+
+function proposalWidget(text: string, className = "selection-ai-addition") {
+  const span = document.createElement("span");
+  span.className = className;
+  span.textContent = text;
+  return span;
+}
+
+export function showDocumentProposalPreview(
+  editor: Editor,
+  batch: DocumentOperationBatch
+) {
+  const targets = batch.operations.map((operation) =>
+    proposalTarget(editor, operation.target.blockId)
+  );
+  if (targets.some((target) => !target)) return false;
+  const decorations: Decoration[] = [];
+  for (const [index, operation] of batch.operations.entries()) {
+    const target = targets[index]!;
+    if (operation.type === "delete-block") {
+      decorations.push(
+        Decoration.node(target.pos, target.pos + target.node.nodeSize, {
+          class: "selection-ai-removal",
+        })
+      );
+      continue;
+    }
+    if (operation.type === "set-block-attributes") {
+      decorations.push(
+        Decoration.node(target.pos, target.pos + target.node.nodeSize, {
+          class: "document-proposal-attribute-change",
+          title: `Proposed attributes: ${JSON.stringify(operation.attributes)}`,
+        })
+      );
+      continue;
+    }
+    if (operation.type === "insert-blocks-after") {
+      decorations.push(
+        Decoration.widget(
+          target.pos + target.node.nodeSize,
+          () =>
+            proposalWidget(
+              plainTextFromDocumentBlocks(operation.blocks),
+              "selection-ai-addition document-proposal-insertion"
+            ),
+          { side: 1 }
+        )
+      );
+      continue;
+    }
+    if (
+      target.text === operation.target.expectedText &&
+      operation.target.to <= target.text.length
+    ) {
+      const from = target.textFrom + operation.target.from;
+      let cursor = from;
+      for (const part of selectionWordDiff(
+        target.text.slice(operation.target.from, operation.target.to),
+        operation.text
+      )) {
+        if (part.added) {
+          decorations.push(
+            Decoration.widget(cursor, () => proposalWidget(part.value), {
+              side: 1,
+            })
+          );
+        } else {
+          const end = cursor + part.value.length;
+          if (part.removed)
+            decorations.push(
+              Decoration.inline(cursor, end, {
+                class: "selection-ai-removal",
+              })
+            );
+          cursor = end;
+        }
+      }
+    } else {
+      decorations.push(
+        Decoration.widget(
+          target.textFrom,
+          () => proposalWidget(`Replace with: ${operation.text}`),
+          { side: -1 }
+        )
+      );
+    }
+  }
+  editor.view.dispatch(
+    editor.state.tr.setMeta(
+      previewKey,
+      DecorationSet.create(editor.state.doc, decorations)
+    )
+  );
+  return true;
 }
 
 export function selectionIsCurrent(

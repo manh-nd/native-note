@@ -450,6 +450,12 @@ export const documentProposals = pgTable(
     baseContentRevision: integer("base_content_revision").notNull(),
     operations: jsonb("operations").$type<DocumentOperationBatch>().notNull(),
     summaryVi: text("summary_vi").notNull(),
+    agentRunId: uuid("agent_run_id").references(() => agentRuns.id, {
+      onDelete: "set null",
+    }),
+    providerToolCallId: text("provider_tool_call_id"),
+    toolCallIdempotencyKey: text("tool_call_idempotency_key"),
+    idempotencyScopeId: uuid("idempotency_scope_id"),
     status: documentProposalStatus("status").notNull().default("pending"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -458,6 +464,10 @@ export const documentProposals = pgTable(
   },
   (table) => [
     index("document_proposals_page_status_idx").on(table.pageId, table.status),
+    uniqueIndex("document_proposals_agent_idempotency_idx").on(
+      table.idempotencyScopeId,
+      table.toolCallIdempotencyKey
+    ),
   ]
 );
 

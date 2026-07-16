@@ -2,7 +2,7 @@ export {
   AGENT_MAX_STEPS,
   AGENT_MODEL_MAX_ATTEMPTS,
   AgentModelError,
-  runReadOnlyAgent,
+  runAgent,
   type AgentDefinitionSnapshot,
   type AgentHistoryItem,
   type AgentModel,
@@ -16,6 +16,7 @@ export {
   ToolExecutionError,
   createToolRegistry,
   redactToolAuditValue,
+  type AgentToolCallProvenance,
   type ToolApproval,
   type ToolContext,
   type ToolDefinition,
@@ -25,6 +26,8 @@ export {
   type ToolSnapshot,
 } from "./lib/tool-registry";
 export {
+  AGENT_TOOLS,
+  CREATE_DOCUMENT_PROPOSAL_TOOL,
   READ_CURRENT_PAGE_TOOL,
   READ_ONLY_AGENT_TOOLS,
   SEARCH_LEARNING_MEMORY_TOOL,

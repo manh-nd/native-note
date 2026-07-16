@@ -4,9 +4,18 @@ export type ToolOwnership = "current_user";
 export type ToolRisk = "low" | "medium" | "high";
 export type ToolApproval = "not_required" | "required";
 
+export type AgentToolCallProvenance = {
+  sourceRunId: string;
+  agentRunId: string;
+  providerToolCallId: string;
+  idempotencyKey: string;
+  idempotencyScopeId: string;
+};
+
 export type ToolContext = {
   userId: string;
   currentPageId: string;
+  provenance?: AgentToolCallProvenance;
 };
 
 export type ToolDefinition = {

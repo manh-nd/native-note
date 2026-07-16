@@ -1,5 +1,6 @@
 export {
   acceptDocumentProposal,
+  createAgentDocumentProposal,
   createBlockDocumentProposal,
   createBlockDocumentProposalOperations,
   createLearningItemFromFinding,
@@ -14,6 +15,7 @@ export {
   completeAiActionRun,
   type PageDocumentProposal,
   type BlockProposalBehavior,
+  type CreateAgentDocumentProposalInput,
   type ReviewFindingDraft,
   type SelectionProposalSegment,
 } from "./lib/document-proposals";

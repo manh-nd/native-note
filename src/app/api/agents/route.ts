@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { apiError, parseJson, requireUserId } from "@/lib/api";
+import { AGENT_TOOLS } from "@/packages/agents";
 import {
   createAgentDefinition,
   listAgentDefinitions,
@@ -15,8 +16,8 @@ const createAgentSchema = z
       .max(32)
       .transform((ids) => [...new Set(ids)]),
     allowedTools: z
-      .array(z.enum(["read_current_page", "search_learning_memory"]))
-      .max(2)
+      .array(z.enum(AGENT_TOOLS))
+      .max(AGENT_TOOLS.length)
       .transform((tools) => [...new Set(tools)]),
     modelPolicy: z
       .object({ model: z.string().trim().min(1).max(120) })

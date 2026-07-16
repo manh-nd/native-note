@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import {
-  AgentModelError,
-  createToolRegistry,
-  runReadOnlyAgent,
-} from "../index";
+import { AgentModelError, createToolRegistry, runAgent } from "../index";
 
 function createReadCurrentPageTools(
   execute = async () => ({ pageId: "page-1", text: "Draft" })
@@ -42,7 +38,7 @@ const definition = {
   maxSteps: 2,
 };
 
-describe("read-only Agent runtime", () => {
+describe("Agent runtime", () => {
   it("executes allowed Tools sequentially and returns a completed terminal status", async () => {
     const model = vi
       .fn()
@@ -54,7 +50,7 @@ describe("read-only Agent runtime", () => {
     const audit = vi.fn(async () => undefined);
 
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition,
         prompt: "Review the current Page.",
         context: { userId: "user-1", currentPageId: "page-1" },
@@ -105,7 +101,7 @@ describe("read-only Agent runtime", () => {
     }));
 
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition: { ...definition, maxSteps: 99 },
         prompt: "Loop forever.",
         context: { userId: "user-1", currentPageId: "page-1" },
@@ -121,7 +117,7 @@ describe("read-only Agent runtime", () => {
     const audit = vi.fn(async () => undefined);
 
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition,
         prompt: "Edit the Page.",
         context: { userId: "user-1", currentPageId: "page-1" },
@@ -149,7 +145,7 @@ describe("read-only Agent runtime", () => {
     const execute = vi.fn(async () => ({ pageId: "page-1", text: "Draft" }));
     const cancellableTools = createReadCurrentPageTools(execute);
 
-    const result = await runReadOnlyAgent({
+    const result = await runAgent({
       definition,
       prompt: "Review the current Page.",
       context: { userId: "user-1", currentPageId: "page-1" },
@@ -185,7 +181,7 @@ describe("read-only Agent runtime", () => {
     const cancellableTools = createReadCurrentPageTools(execute);
 
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition,
         prompt: "Review the current Page.",
         context: { userId: "user-1", currentPageId: "page-1" },
@@ -212,7 +208,7 @@ describe("read-only Agent runtime", () => {
       .mockResolvedValueOnce(true);
 
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition,
         prompt: "Review the current Page.",
         context: { userId: "user-1", currentPageId: "page-1" },
@@ -237,7 +233,7 @@ describe("read-only Agent runtime", () => {
       .mockResolvedValueOnce({ text: "Recovered.", calls: [] });
 
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition,
         prompt: "Review the current Page.",
         context: { userId: "user-1", currentPageId: "page-1" },
@@ -256,7 +252,7 @@ describe("read-only Agent runtime", () => {
       throw new AgentModelError("AI_AUTH_FAILED", { retryable: false });
     });
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition,
         prompt: "Review the current Page.",
         context: { userId: "user-1", currentPageId: "page-1" },
@@ -287,7 +283,7 @@ describe("read-only Agent runtime", () => {
       .mockResolvedValueOnce({ text: "Done.", calls: [] });
 
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition,
         prompt: "Review the current Page.",
         context: { userId: "user-1", currentPageId: "page-1" },
@@ -322,7 +318,7 @@ describe("read-only Agent runtime", () => {
     const audit = vi.fn(async () => undefined);
 
     await expect(
-      runReadOnlyAgent({
+      runAgent({
         definition,
         prompt: "Retry the run.",
         context: { userId: "user-1", currentPageId: "page-1" },

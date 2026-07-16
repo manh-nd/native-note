@@ -16,9 +16,9 @@ import { generateAgentStep } from "@/lib/ai/gemini";
 import {
   AGENT_MAX_STEPS,
   AgentModelError,
-  READ_ONLY_AGENT_TOOLS,
+  AGENT_TOOLS,
   createInitialToolRegistry,
-  runReadOnlyAgent,
+  runAgent,
   type AgentHistoryItem,
   type AgentModel,
   type AgentRunResult,
@@ -102,7 +102,7 @@ export async function createAgentDefinition(input: CreateAgentDefinitionInput) {
   const allowedTools = [...new Set(input.allowedTools)];
   if (
     allowedTools.some(
-      (tool) => !(READ_ONLY_AGENT_TOOLS as readonly string[]).includes(tool)
+      (tool) => !(AGENT_TOOLS as readonly string[]).includes(tool)
     )
   )
     throw new ApiError(
@@ -203,7 +203,7 @@ const geminiAgentModel: AgentModel = async ({
   const systemInstruction = [
     agentSnapshot.instructions.snapshot,
     skills,
-    "You are a bounded, read-only NativeNote Agent. Use only the supplied Tools. Never claim to edit a Page, create a DocumentProposal or LearningItem, or perform an action outside those Tools. Return a concise final response when the task is complete.",
+    "You are a bounded NativeNote Agent. Use only the supplied Tools. Page changes can only be submitted through the create_document_proposal Tool and always require the user to accept the pending DocumentProposal. Never claim that a proposal has already edited a Page, never create a LearningItem, and never perform an action outside the supplied Tools. Return a concise final response when the task is complete.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -417,10 +417,15 @@ export async function runAgentDefinition({
   const controller = new AbortController();
   activeAgentRuns.set(run.id, controller);
   try {
-    result = await runReadOnlyAgent({
+    result = await runAgent({
       definition,
       prompt,
       context: { userId, currentPageId: pageId },
+      provenance: {
+        sourceRunId: sourceRun.id,
+        agentRunId: run.id,
+        idempotencyScopeId: retryRootRunId ?? run.id,
+      },
       tools: registry,
       model,
       signal: controller.signal,

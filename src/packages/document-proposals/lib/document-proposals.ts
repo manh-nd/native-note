@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   aiRuns,
+  agentRuns,
   documentProposals,
   findings,
   learningItems,
@@ -123,9 +124,138 @@ export function createBlockDocumentProposalOperations({
 type Page = typeof pages.$inferSelect;
 type Proposal = typeof documentProposals.$inferSelect;
 
+export type CreateAgentDocumentProposalInput = {
+  userId: string;
+  pageId: string;
+  sourceRunId: string;
+  agentRunId: string;
+  providerToolCallId: string;
+  toolCallIdempotencyKey: string;
+  idempotencyScopeId: string;
+  summary: string;
+  operations: DocumentOperationBatch;
+};
+
+function agentProposalResult(proposal: Proposal) {
+  return {
+    proposalId: proposal.id,
+    pageId: proposal.pageId,
+    baseContentRevision: proposal.baseContentRevision,
+    status: proposal.status,
+  };
+}
+
+function idempotentAgentProposal(
+  proposal: Proposal,
+  input: Pick<CreateAgentDocumentProposalInput, "userId" | "pageId">
+) {
+  if (proposal.creatorId !== input.userId || proposal.pageId !== input.pageId) {
+    throw new ApiError(
+      409,
+      "The Tool idempotency key belongs to a different proposal.",
+      "AGENT_PROPOSAL_IDEMPOTENCY_CONFLICT"
+    );
+  }
+  return agentProposalResult(proposal);
+}
+
+async function findAgentProposalByIdempotency(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  input: Pick<
+    CreateAgentDocumentProposalInput,
+    "idempotencyScopeId" | "toolCallIdempotencyKey"
+  >
+) {
+  const [proposal] = await tx
+    .select()
+    .from(documentProposals)
+    .where(
+      and(
+        eq(documentProposals.idempotencyScopeId, input.idempotencyScopeId),
+        eq(
+          documentProposals.toolCallIdempotencyKey,
+          input.toolCallIdempotencyKey
+        )
+      )
+    )
+    .limit(1);
+  return proposal;
+}
+
+export async function createAgentDocumentProposal(
+  input: CreateAgentDocumentProposalInput
+) {
+  return db.transaction(async (tx) => {
+    const existing = await findAgentProposalByIdempotency(tx, input);
+    if (existing) return idempotentAgentProposal(existing, input);
+
+    const [ownedPage] = await tx
+      .select({ page: pages })
+      .from(pages)
+      .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
+      .where(
+        and(
+          eq(pages.id, input.pageId),
+          eq(workspaces.userId, input.userId),
+          eq(pages.contentRevision, input.operations.baseContentRevision)
+        )
+      )
+      .for("update", { of: [pages] })
+      .limit(1);
+    if (!ownedPage) {
+      throw new ApiError(
+        409,
+        "The Page is unavailable or its content revision has changed.",
+        "STALE_AGENT_PROPOSAL"
+      );
+    }
+    try {
+      applyDocumentOperations({
+        content: ownedPage.page.content,
+        contentRevision: ownedPage.page.contentRevision,
+        batch: input.operations,
+      });
+    } catch {
+      throw new ApiError(
+        422,
+        "The Agent submitted invalid document operations.",
+        "INVALID_AGENT_DOCUMENT_OPERATIONS"
+      );
+    }
+
+    const [created] = await tx
+      .insert(documentProposals)
+      .values({
+        pageId: input.pageId,
+        sourceRunId: input.sourceRunId,
+        creatorId: input.userId,
+        baseContentRevision: input.operations.baseContentRevision,
+        operations: input.operations,
+        summaryVi: input.summary,
+        agentRunId: input.agentRunId,
+        providerToolCallId: input.providerToolCallId,
+        toolCallIdempotencyKey: input.toolCallIdempotencyKey,
+        idempotencyScopeId: input.idempotencyScopeId,
+      })
+      .onConflictDoNothing({
+        target: [
+          documentProposals.idempotencyScopeId,
+          documentProposals.toolCallIdempotencyKey,
+        ],
+      })
+      .returning();
+    if (created) return agentProposalResult(created);
+    const winner = await findAgentProposalByIdempotency(tx, input);
+    if (!winner) throw new Error("DocumentProposal was not created.");
+    return idempotentAgentProposal(winner, input);
+  });
+}
+
 export type PageDocumentProposal = Proposal & {
   action: string;
-  sourceKind: "selection" | "block" | "review" | "skill";
+  sourceKind: "selection" | "block" | "review" | "skill" | "agent";
+  agentId: string | null;
+  agentPrompt: string | null;
 };
 
 export type ReviewFindingDraft = {
@@ -899,9 +1029,12 @@ export async function loadPageDocumentProposals(
         proposal: documentProposals,
         action: aiRuns.action,
         sourceKind: aiRuns.sourceKind,
+        agentId: agentRuns.agentId,
+        agentPrompt: agentRuns.promptSnapshot,
       })
       .from(documentProposals)
       .innerJoin(aiRuns, eq(documentProposals.sourceRunId, aiRuns.id))
+      .leftJoin(agentRuns, eq(documentProposals.agentRunId, agentRuns.id))
       .where(
         and(
           eq(documentProposals.pageId, pageId),
@@ -935,12 +1068,16 @@ export async function loadPageDocumentProposals(
     }
     return {
       page,
-      proposals: rows.map(({ proposal, action, sourceKind }) => ({
-        ...proposal,
-        status: staleIds.includes(proposal.id) ? "stale" : proposal.status,
-        action,
-        sourceKind,
-      })),
+      proposals: rows.map(
+        ({ proposal, action, sourceKind, agentId, agentPrompt }) => ({
+          ...proposal,
+          status: staleIds.includes(proposal.id) ? "stale" : proposal.status,
+          action,
+          sourceKind,
+          agentId,
+          agentPrompt,
+        })
+      ),
     };
   });
 }

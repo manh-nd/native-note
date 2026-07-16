@@ -36,15 +36,23 @@ export type AiTransform = {
   snapshot?: string;
   stale?: boolean;
   action?: string;
+  agentRegeneration?: { agentId: string; prompt: string };
 };
 
 function proposalPreview(transform: AiTransform) {
-  const operation = transform.operations?.operations[0];
-  if (!operation) return null;
-  if (operation.type === "replace-text") return operation.text;
-  if (operation.type === "insert-blocks-after")
-    return plainTextFromDocumentBlocks(operation.blocks);
-  return null;
+  const operations = transform.operations?.operations ?? [];
+  return operations
+    .map((operation) => {
+      if (operation.type === "replace-text") return operation.text;
+      if (operation.type === "insert-blocks-after")
+        return plainTextFromDocumentBlocks(operation.blocks);
+      if (operation.type === "delete-block")
+        return `Delete: ${operation.target.expectedText}`;
+      return `Change attributes: ${Object.entries(operation.attributes)
+        .map(([key, value]) => `${key}=${String(value)}`)
+        .join(", ")}`;
+    })
+    .join("\n");
 }
 
 const categories: Record<string, string> = {
