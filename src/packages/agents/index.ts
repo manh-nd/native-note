@@ -1,11 +1,15 @@
 export {
   AGENT_MAX_STEPS,
+  AGENT_MODEL_MAX_ATTEMPTS,
+  AgentModelError,
   runReadOnlyAgent,
   type AgentDefinitionSnapshot,
   type AgentHistoryItem,
   type AgentModel,
   type AgentModelRequest,
+  type AgentRunResult,
   type AgentToolRequest,
+  type CompletedToolCall,
   type ToolCallAudit,
 } from "./lib/agent-runtime";
 export {

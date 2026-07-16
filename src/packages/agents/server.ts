@@ -1,5 +1,5 @@
 import type { Content, FunctionDeclaration, Part } from "@google/genai";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { db } from "@/db";
 import {
   aiRuns,
@@ -15,13 +15,30 @@ import { ApiError } from "@/lib/api";
 import { generateAgentStep } from "@/lib/ai/gemini";
 import {
   AGENT_MAX_STEPS,
+  AgentModelError,
   READ_ONLY_AGENT_TOOLS,
   createInitialToolRegistry,
   runReadOnlyAgent,
   type AgentHistoryItem,
   type AgentModel,
+  type AgentRunResult,
+  type CompletedToolCall,
   type ToolRegistry,
 } from "./index";
+
+const activeAgentRuns = new Map<string, AbortController>();
+
+async function persistedCancellationRequested(runId: string) {
+  const [run] = await db
+    .select({
+      status: agentRuns.status,
+      cancellationRequestedAt: agentRuns.cancellationRequestedAt,
+    })
+    .from(agentRuns)
+    .where(eq(agentRuns.id, runId))
+    .limit(1);
+  return run?.status === "cancelled" || run?.cancellationRequestedAt != null;
+}
 
 export type CreateAgentDefinitionInput = {
   userId: string;
@@ -175,6 +192,7 @@ const geminiAgentModel: AgentModel = async ({
   agentSnapshot,
   toolSnapshots,
   history,
+  signal,
 }) => {
   const skills = agentSnapshot.skillVersions
     .map(
@@ -195,12 +213,24 @@ const geminiAgentModel: AgentModel = async ({
     parametersJsonSchema: tool.inputSchema,
     responseJsonSchema: tool.outputSchema,
   }));
-  return generateAgentStep(
-    historyContents(history),
-    systemInstruction,
-    declarations,
-    { model: agentSnapshot.modelPolicy.model }
-  );
+  try {
+    return await generateAgentStep(
+      historyContents(history),
+      systemInstruction,
+      declarations,
+      { model: agentSnapshot.modelPolicy.model, maxAttempts: 1, signal }
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const code = error instanceof ApiError ? error.code : "AI_PROVIDER_ERROR";
+    throw new AgentModelError(code, {
+      retryable: [
+        "AI_RATE_LIMITED",
+        "AI_TIMEOUT",
+        "AI_PROVIDER_ERROR",
+      ].includes(code),
+    });
+  }
 };
 
 export async function runAgentDefinition({
@@ -210,6 +240,10 @@ export async function runAgentDefinition({
   prompt,
   model = geminiAgentModel,
   registry = createInitialToolRegistry(),
+  retryOfRunId,
+  retryRootRunId,
+  completedToolCalls = new Map(),
+  isCancellationRequested = persistedCancellationRequested,
 }: {
   userId: string;
   agentId: string;
@@ -217,6 +251,10 @@ export async function runAgentDefinition({
   prompt: string;
   model?: AgentModel;
   registry?: ToolRegistry;
+  retryOfRunId?: string;
+  retryRootRunId?: string;
+  completedToolCalls?: Map<string, CompletedToolCall>;
+  isCancellationRequested?: (runId: string) => Promise<boolean>;
 }) {
   const [owned] = await db
     .select({
@@ -292,72 +330,92 @@ export async function runAgentDefinition({
     maxSteps: owned.agent.maxSteps,
   };
   const toolSnapshots = registry.snapshots(definition.allowedTools);
-  const [sourceRun] = await db
-    .insert(aiRuns)
-    .values({
-      pageId,
-      creatorId: userId,
-      sourceKind: "agent",
-      action: "manual_agent",
-      model: definition.modelPolicy.model,
-      status: "running",
-      inputSnapshot: prompt,
-      outputSnapshot: {},
-      contentRevision: currentPage.contentRevision,
-      policySnapshot: { agent: definition, tools: toolSnapshots },
-      instructionsPageId: definition.instructions.pageId,
-      instructionsContentRevision: definition.instructions.contentRevision,
-      instructionsSnapshot: definition.instructions.snapshot,
-      completedAt: null,
-    })
-    .returning();
-  if (!sourceRun) throw new Error("AI run was not created.");
-  const [run] = await db
-    .insert(agentRuns)
-    .values({
-      sourceRunId: sourceRun.id,
-      agentId,
-      pageId,
-      creatorId: userId,
-      promptSnapshot: prompt,
-      agentSnapshot: definition,
-      toolSnapshots,
-      status: "running",
-    })
-    .returning();
-  if (!run) throw new Error("AgentRun was not created.");
+  const { sourceRun, run } = await db.transaction(async (tx) => {
+    const [createdSourceRun] = await tx
+      .insert(aiRuns)
+      .values({
+        pageId,
+        creatorId: userId,
+        sourceKind: "agent",
+        action: "manual_agent",
+        model: definition.modelPolicy.model,
+        status: "running",
+        inputSnapshot: prompt,
+        outputSnapshot: {},
+        contentRevision: currentPage.contentRevision,
+        policySnapshot: { agent: definition, tools: toolSnapshots },
+        instructionsPageId: definition.instructions.pageId,
+        instructionsContentRevision: definition.instructions.contentRevision,
+        instructionsSnapshot: definition.instructions.snapshot,
+        completedAt: null,
+      })
+      .returning();
+    if (!createdSourceRun) throw new Error("AI run was not created.");
+    const [createdRun] = await tx
+      .insert(agentRuns)
+      .values({
+        sourceRunId: createdSourceRun.id,
+        agentId,
+        pageId,
+        creatorId: userId,
+        retryOfRunId,
+        retryRootRunId,
+        promptSnapshot: prompt,
+        agentSnapshot: definition,
+        toolSnapshots,
+        status: "running",
+      })
+      .returning();
+    if (!createdRun) throw new Error("AgentRun was not created.");
+    return { sourceRun: createdSourceRun, run: createdRun };
+  });
 
-  async function finishRuns({
-    status,
-    output,
-    stepCount,
-    errorCode,
-  }: {
-    status: "completed" | "failed" | "step_limit";
-    output: string | null;
-    stepCount: number;
-    errorCode: string | null;
-  }) {
+  async function finishRuns(
+    result: Pick<
+      AgentRunResult,
+      "status" | "output" | "steps" | "modelAttempts" | "errorCode"
+    >
+  ) {
     return db.transaction(async (tx) => {
       const completedAt = new Date();
       await tx
         .update(aiRuns)
         .set({
-          status,
-          outputSnapshot: { output, stepCount, errorCode },
+          status: result.status,
+          outputSnapshot: {
+            output: result.output,
+            stepCount: result.steps,
+            modelAttempts: result.modelAttempts,
+            errorCode: result.errorCode,
+          },
           completedAt,
         })
-        .where(eq(aiRuns.id, sourceRun.id));
+        .where(and(eq(aiRuns.id, sourceRun.id), eq(aiRuns.status, "running")));
       const [completed] = await tx
         .update(agentRuns)
-        .set({ status, output, stepCount, errorCode, completedAt })
-        .where(eq(agentRuns.id, run.id))
+        .set({
+          status: result.status,
+          output: result.output,
+          stepCount: result.steps,
+          modelAttempts: result.modelAttempts,
+          errorCode: result.errorCode,
+          completedAt,
+        })
+        .where(and(eq(agentRuns.id, run.id), eq(agentRuns.status, "running")))
         .returning();
-      return completed;
+      if (completed) return completed;
+      const [terminal] = await tx
+        .select()
+        .from(agentRuns)
+        .where(eq(agentRuns.id, run.id))
+        .limit(1);
+      return terminal;
     });
   }
 
   let result;
+  const controller = new AbortController();
+  activeAgentRuns.set(run.id, controller);
   try {
     result = await runReadOnlyAgent({
       definition,
@@ -365,10 +423,23 @@ export async function runAgentDefinition({
       context: { userId, currentPageId: pageId },
       tools: registry,
       model,
+      signal: controller.signal,
+      findCompletedToolCallByIdempotencyKey: async (idempotencyKey) =>
+        completedToolCalls.get(idempotencyKey),
+      isCancellationRequested: () => isCancellationRequested(run.id),
+      onProgress: async ({ steps, modelAttempts }) => {
+        await db
+          .update(agentRuns)
+          .set({ stepCount: steps, modelAttempts })
+          .where(
+            and(eq(agentRuns.id, run.id), eq(agentRuns.status, "running"))
+          );
+      },
       audit: async (audit) => {
         await db.insert(toolCalls).values({
           agentRunId: run.id,
           providerCallId: audit.toolCallId,
+          idempotencyKey: audit.idempotencyKey,
           name: audit.name,
           input: audit.input,
           output: audit.output,
@@ -378,6 +449,7 @@ export async function runAgentDefinition({
           startedAt: audit.startedAt,
           completedAt: audit.completedAt,
           durationMs: audit.durationMs,
+          reused: audit.reused,
         });
       },
     });
@@ -385,24 +457,243 @@ export async function runAgentDefinition({
     await finishRuns({
       status: "failed",
       output: null,
-      stepCount: 0,
+      steps: 0,
+      modelAttempts: 0,
       errorCode: "AGENT_RUNTIME_FAILED",
     });
     throw error;
+  } finally {
+    activeAgentRuns.delete(run.id);
   }
-  return finishRuns({
-    status: result.status,
-    output: result.output,
-    stepCount: result.steps,
-    errorCode: result.errorCode,
-  });
+  return finishRuns(result);
 }
 
 export async function loadAgentRuns(userId: string, agentId: string) {
-  return db
+  const runs = await db
     .select()
     .from(agentRuns)
-    .innerJoin(agents, eq(agentRuns.agentId, agents.id))
-    .where(and(eq(agentRuns.agentId, agentId), eq(agents.creatorId, userId)))
+    .where(and(eq(agentRuns.agentId, agentId), eq(agentRuns.creatorId, userId)))
     .orderBy(desc(agentRuns.createdAt));
+  const calls = runs.length
+    ? await db
+        .select()
+        .from(toolCalls)
+        .where(
+          inArray(
+            toolCalls.agentRunId,
+            runs.map((run) => run.id)
+          )
+        )
+        .orderBy(toolCalls.startedAt)
+    : [];
+  const callsByRun = Map.groupBy(calls, (call) => call.agentRunId);
+  return runs.map((run) => ({
+    id: run.id,
+    status: run.status,
+    modelSnapshot: run.agentSnapshot.modelPolicy,
+    toolSnapshots: run.toolSnapshots,
+    output: run.output,
+    steps: run.stepCount,
+    modelAttempts: run.modelAttempts,
+    errorCode: run.errorCode,
+    createdAt: run.createdAt,
+    completedAt: run.completedAt,
+    durationMs: run.completedAt
+      ? run.completedAt.getTime() - run.createdAt.getTime()
+      : null,
+    toolCalls: callsByRun.get(run.id) ?? [],
+  }));
+}
+
+export async function cancelAgentRun(
+  userId: string,
+  agentId: string,
+  runId: string
+) {
+  const [owned] = await db
+    .select({
+      id: agentRuns.id,
+      sourceRunId: agentRuns.sourceRunId,
+      stepCount: agentRuns.stepCount,
+      modelAttempts: agentRuns.modelAttempts,
+    })
+    .from(agentRuns)
+    .where(
+      and(
+        eq(agentRuns.id, runId),
+        eq(agentRuns.agentId, agentId),
+        eq(agentRuns.creatorId, userId),
+        eq(agentRuns.status, "running")
+      )
+    )
+    .limit(1);
+  if (!owned)
+    throw new ApiError(
+      404,
+      "Không tìm thấy AgentRun đang chạy.",
+      "AGENT_RUN_NOT_RUNNING"
+    );
+
+  const cancellationRequestedAt = new Date();
+  const cancelled = await db.transaction(async (tx) => {
+    await tx
+      .update(aiRuns)
+      .set({
+        status: "cancelled",
+        outputSnapshot: {
+          output: null,
+          stepCount: owned.stepCount,
+          modelAttempts: owned.modelAttempts,
+          errorCode: "AGENT_CANCELLED",
+        },
+        completedAt: cancellationRequestedAt,
+      })
+      .where(
+        and(eq(aiRuns.id, owned.sourceRunId), eq(aiRuns.status, "running"))
+      );
+    const [updated] = await tx
+      .update(agentRuns)
+      .set({
+        status: "cancelled",
+        errorCode: "AGENT_CANCELLED",
+        cancellationRequestedAt,
+        completedAt: cancellationRequestedAt,
+      })
+      .where(and(eq(agentRuns.id, owned.id), eq(agentRuns.status, "running")))
+      .returning();
+    return updated;
+  });
+  activeAgentRuns.get(runId)?.abort();
+  return cancelled;
+}
+
+export async function retryAgentRun({
+  userId,
+  agentId,
+  runId,
+  model = geminiAgentModel,
+  registry = createInitialToolRegistry(),
+}: {
+  userId: string;
+  agentId: string;
+  runId: string;
+  model?: AgentModel;
+  registry?: ToolRegistry;
+}) {
+  const [existingRetry] = await db
+    .select()
+    .from(agentRuns)
+    .where(
+      and(
+        eq(agentRuns.retryOfRunId, runId),
+        eq(agentRuns.agentId, agentId),
+        eq(agentRuns.creatorId, userId)
+      )
+    )
+    .limit(1);
+  if (existingRetry) return existingRetry;
+
+  const [previous] = await db
+    .select({
+      id: agentRuns.id,
+      pageId: agentRuns.pageId,
+      promptSnapshot: agentRuns.promptSnapshot,
+      retryRootRunId: agentRuns.retryRootRunId,
+      status: agentRuns.status,
+    })
+    .from(agentRuns)
+    .where(
+      and(
+        eq(agentRuns.id, runId),
+        eq(agentRuns.agentId, agentId),
+        eq(agentRuns.creatorId, userId)
+      )
+    )
+    .limit(1);
+  if (!previous)
+    throw new ApiError(404, "Không tìm thấy AgentRun.", "AGENT_RUN_NOT_FOUND");
+  if (previous.status === "running" || previous.status === "completed")
+    throw new ApiError(
+      409,
+      "Chỉ có thể thử lại AgentRun chưa hoàn thành.",
+      "AGENT_RUN_NOT_RETRYABLE"
+    );
+
+  const retryRootRunId = previous.retryRootRunId ?? previous.id;
+  const lineageRuns = await db
+    .select({ id: agentRuns.id })
+    .from(agentRuns)
+    .where(
+      and(
+        eq(agentRuns.agentId, agentId),
+        eq(agentRuns.creatorId, userId),
+        or(
+          eq(agentRuns.id, retryRootRunId),
+          eq(agentRuns.retryRootRunId, retryRootRunId)
+        )
+      )
+    );
+  const completedCalls = await db
+    .select({
+      idempotencyKey: toolCalls.idempotencyKey,
+      name: toolCalls.name,
+      input: toolCalls.input,
+      output: toolCalls.output,
+      risk: toolCalls.risk,
+      approvalState: toolCalls.approvalState,
+      failureCode: toolCalls.failureCode,
+    })
+    .from(toolCalls)
+    .where(
+      inArray(
+        toolCalls.agentRunId,
+        lineageRuns.map((run) => run.id)
+      )
+    );
+  const completedToolCalls = new Map(
+    completedCalls
+      .filter((call) => call.failureCode === null)
+      .map((call) => [
+        call.idempotencyKey,
+        {
+          name: call.name,
+          input: call.input,
+          output: call.output,
+          risk: call.risk,
+          approvalState: call.approvalState,
+        },
+      ])
+  );
+  try {
+    return await runAgentDefinition({
+      userId,
+      agentId,
+      pageId: previous.pageId,
+      prompt: previous.promptSnapshot,
+      model,
+      registry,
+      retryOfRunId: previous.id,
+      retryRootRunId,
+      completedToolCalls,
+    });
+  } catch (error) {
+    if (
+      typeof error !== "object" ||
+      error === null ||
+      (error as { code?: unknown }).code !== "23505"
+    )
+      throw error;
+    const [winner] = await db
+      .select()
+      .from(agentRuns)
+      .where(
+        and(
+          eq(agentRuns.retryOfRunId, previous.id),
+          eq(agentRuns.creatorId, userId)
+        )
+      )
+      .limit(1);
+    if (!winner) throw error;
+    return winner;
+  }
 }

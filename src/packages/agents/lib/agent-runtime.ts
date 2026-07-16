@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ToolExecutionError,
   type ToolContext,
@@ -7,6 +8,19 @@ import {
 } from "./tool-registry";
 
 export const AGENT_MAX_STEPS = 6;
+export const AGENT_MODEL_MAX_ATTEMPTS = 3;
+
+export class AgentModelError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(code: string, { retryable }: { retryable: boolean }) {
+    super(code);
+    this.name = "AgentModelError";
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
 
 export type AgentDefinitionSnapshot = {
   id: string;
@@ -48,6 +62,7 @@ export type AgentModelRequest = {
   agentSnapshot: AgentDefinitionSnapshot;
   toolSnapshots: ToolSnapshot[];
   history: AgentHistoryItem[];
+  signal?: AbortSignal;
 };
 
 export type AgentModel = (
@@ -56,6 +71,7 @@ export type AgentModel = (
 
 export type ToolCallAudit = {
   toolCallId: string;
+  idempotencyKey: string;
   name: string;
   input: unknown;
   output: unknown | null;
@@ -65,6 +81,42 @@ export type ToolCallAudit = {
   completedAt: Date;
   durationMs: number;
   failureCode: string | null;
+  reused: boolean;
+};
+
+export type CompletedToolCall = {
+  name: string;
+  input: unknown;
+  output: unknown;
+  risk: ToolRisk;
+  approvalState: ToolCallAudit["approvalState"];
+};
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function toolCallIdempotencyKey(name: string, input: unknown) {
+  return createHash("sha256")
+    .update(canonicalJson({ name, input }))
+    .digest("hex");
+}
+
+export type AgentRunResult = {
+  status: "completed" | "failed" | "cancelled" | "step_limit";
+  output: string | null;
+  steps: number;
+  modelAttempts: number;
+  errorCode: string | null;
+  agentSnapshot: AgentDefinitionSnapshot;
+  toolSnapshots: ToolSnapshot[];
 };
 
 export async function runReadOnlyAgent({
@@ -74,6 +126,10 @@ export async function runReadOnlyAgent({
   tools,
   model,
   audit,
+  signal,
+  findCompletedToolCallByIdempotencyKey,
+  isCancellationRequested,
+  onProgress,
 }: {
   definition: AgentDefinitionSnapshot;
   prompt: string;
@@ -81,7 +137,16 @@ export async function runReadOnlyAgent({
   tools: ToolRegistry;
   model: AgentModel;
   audit: (entry: ToolCallAudit) => Promise<void>;
-}) {
+  signal?: AbortSignal;
+  findCompletedToolCallByIdempotencyKey?: (
+    idempotencyKey: string
+  ) => Promise<CompletedToolCall | undefined>;
+  isCancellationRequested?: () => Promise<boolean>;
+  onProgress?: (progress: {
+    steps: number;
+    modelAttempts: number;
+  }) => Promise<void>;
+}): Promise<AgentRunResult> {
   const maxSteps = Math.min(Math.max(definition.maxSteps, 1), AGENT_MAX_STEPS);
   const agentSnapshot = {
     ...definition,
@@ -93,43 +158,97 @@ export async function runReadOnlyAgent({
   };
   const toolSnapshots = tools.snapshots(agentSnapshot.allowedTools);
   const history: AgentHistoryItem[] = [{ role: "user", text: prompt }];
+  const completedToolCalls = new Map<string, CompletedToolCall>();
+  let modelAttempts = 0;
+
+  const terminalResult = (
+    status: AgentRunResult["status"],
+    steps: number,
+    errorCode: string | null,
+    output: string | null = null
+  ): AgentRunResult => ({
+    status,
+    output,
+    steps,
+    modelAttempts,
+    errorCode,
+    agentSnapshot,
+    toolSnapshots,
+  });
+  const cancelled = (steps: number) =>
+    terminalResult("cancelled", steps, "AGENT_CANCELLED");
+  const shouldCancel = async () =>
+    signal?.aborted || (await isCancellationRequested?.()) === true;
 
   for (let step = 1; step <= maxSteps; step += 1) {
+    if (await shouldCancel()) return cancelled(step - 1);
     let response: Awaited<ReturnType<AgentModel>>;
-    try {
-      response = await model({ prompt, agentSnapshot, toolSnapshots, history });
-    } catch {
-      return {
-        status: "failed" as const,
-        output: null,
-        steps: step,
-        errorCode: "MODEL_FAILED",
-        agentSnapshot,
-        toolSnapshots,
-      };
+    for (let attempt = 1; ; attempt += 1) {
+      modelAttempts += 1;
+      await onProgress?.({ steps: step, modelAttempts });
+      try {
+        response = await model({
+          prompt,
+          agentSnapshot,
+          toolSnapshots,
+          history,
+          signal,
+        });
+        break;
+      } catch (error) {
+        if (await shouldCancel()) return cancelled(step);
+        const modelError =
+          error instanceof AgentModelError
+            ? error
+            : new AgentModelError("MODEL_FAILED", { retryable: false });
+        if (!modelError.retryable || attempt >= AGENT_MODEL_MAX_ATTEMPTS) {
+          return terminalResult("failed", step, modelError.code);
+        }
+      }
     }
+    if (await shouldCancel()) return cancelled(step);
     history.push({ role: "agent", text: response.text, calls: response.calls });
     if (response.calls.length === 0) {
       if (response.text?.trim())
-        return {
-          status: "completed" as const,
-          output: response.text,
-          steps: step,
-          errorCode: null,
-          agentSnapshot,
-          toolSnapshots,
-        };
-      return {
-        status: "failed" as const,
-        output: null,
-        steps: step,
-        errorCode: "EMPTY_MODEL_RESPONSE",
-        agentSnapshot,
-        toolSnapshots,
-      };
+        return terminalResult("completed", step, null, response.text);
+      return terminalResult("failed", step, "EMPTY_MODEL_RESPONSE");
     }
 
     for (const call of response.calls) {
+      if (await shouldCancel()) return cancelled(step);
+      const idempotencyKey = toolCallIdempotencyKey(call.name, call.input);
+      const locallyCompleted = completedToolCalls.get(idempotencyKey);
+      const previous =
+        locallyCompleted ??
+        (await findCompletedToolCallByIdempotencyKey?.(idempotencyKey));
+      if (previous) {
+        if (previous.name !== call.name) {
+          return terminalResult("failed", step, "TOOL_IDEMPOTENCY_CONFLICT");
+        }
+        completedToolCalls.set(idempotencyKey, previous);
+        const reusedAt = new Date();
+        await audit({
+          toolCallId: call.id,
+          idempotencyKey,
+          name: call.name,
+          input: previous.input,
+          output: previous.output,
+          risk: previous.risk,
+          approvalState: previous.approvalState,
+          startedAt: reusedAt,
+          completedAt: reusedAt,
+          durationMs: 0,
+          failureCode: null,
+          reused: true,
+        });
+        history.push({
+          role: "tool",
+          toolCallId: call.id,
+          name: call.name,
+          output: previous.output,
+        });
+        continue;
+      }
       const startedAt = new Date();
       try {
         const result = await tools.execute(
@@ -141,6 +260,7 @@ export async function runReadOnlyAgent({
         const completedAt = new Date();
         await audit({
           toolCallId: call.id,
+          idempotencyKey,
           name: call.name,
           input: result.auditInput,
           output: result.auditOutput,
@@ -150,6 +270,14 @@ export async function runReadOnlyAgent({
           completedAt,
           durationMs: completedAt.getTime() - startedAt.getTime(),
           failureCode: null,
+          reused: false,
+        });
+        completedToolCalls.set(idempotencyKey, {
+          name: call.name,
+          input: result.auditInput,
+          output: result.output,
+          risk: result.snapshot.risk,
+          approvalState: "not_required",
         });
         history.push({
           role: "tool",
@@ -168,6 +296,7 @@ export async function runReadOnlyAgent({
         );
         await audit({
           toolCallId: call.id,
+          idempotencyKey,
           name: call.name,
           input: "[REDACTED:INVALID_OR_UNAUTHORIZED_TOOL_INPUT]",
           output: null,
@@ -180,25 +309,12 @@ export async function runReadOnlyAgent({
           completedAt,
           durationMs: completedAt.getTime() - startedAt.getTime(),
           failureCode,
+          reused: false,
         });
-        return {
-          status: "failed" as const,
-          output: null,
-          steps: step,
-          errorCode: failureCode,
-          agentSnapshot,
-          toolSnapshots,
-        };
+        return terminalResult("failed", step, failureCode);
       }
     }
   }
 
-  return {
-    status: "step_limit" as const,
-    output: null,
-    steps: maxSteps,
-    errorCode: "STEP_LIMIT_REACHED",
-    agentSnapshot,
-    toolSnapshots,
-  };
+  return terminalResult("step_limit", maxSteps, "STEP_LIMIT_REACHED");
 }

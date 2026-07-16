@@ -55,6 +55,7 @@ export const aiRunStatus = pgEnum("ai_run_status", [
   "running",
   "completed",
   "failed",
+  "cancelled",
   "step_limit",
 ]);
 export const documentProposalStatus = pgEnum("document_proposal_status", [
@@ -80,6 +81,7 @@ export const agentRunStatus = pgEnum("agent_run_status", [
   "running",
   "completed",
   "failed",
+  "cancelled",
   "step_limit",
 ]);
 export const toolRisk = pgEnum("tool_risk", ["low", "medium", "high"]);
@@ -317,6 +319,8 @@ export const agentRuns = pgTable(
     creatorId: text("creator_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    retryOfRunId: uuid("retry_of_run_id"),
+    retryRootRunId: uuid("retry_root_run_id"),
     status: agentRunStatus("status").notNull().default("running"),
     promptSnapshot: text("prompt_snapshot").notNull(),
     agentSnapshot: jsonb("agent_snapshot")
@@ -325,7 +329,11 @@ export const agentRuns = pgTable(
     toolSnapshots: jsonb("tool_snapshots").$type<ToolSnapshot[]>().notNull(),
     output: text("output"),
     stepCount: integer("step_count").notNull().default(0),
+    modelAttempts: integer("model_attempts").notNull().default(0),
     errorCode: text("error_code"),
+    cancellationRequestedAt: timestamp("cancellation_requested_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -335,6 +343,8 @@ export const agentRuns = pgTable(
     uniqueIndex("agent_runs_source_run_idx").on(table.sourceRunId),
     index("agent_runs_agent_created_idx").on(table.agentId, table.createdAt),
     index("agent_runs_page_created_idx").on(table.pageId, table.createdAt),
+    uniqueIndex("agent_runs_retry_idx").on(table.retryOfRunId),
+    index("agent_runs_retry_root_idx").on(table.retryRootRunId),
   ]
 );
 
@@ -346,6 +356,7 @@ export const toolCalls = pgTable(
       .notNull()
       .references(() => agentRuns.id, { onDelete: "cascade" }),
     providerCallId: text("provider_call_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
     name: text("name").notNull(),
     input: jsonb("input").notNull(),
     output: jsonb("output"),
@@ -355,9 +366,18 @@ export const toolCalls = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
     durationMs: integer("duration_ms").notNull(),
+    reused: boolean("reused").notNull().default(false),
   },
   (table) => [
     index("tool_calls_run_started_idx").on(table.agentRunId, table.startedAt),
+    index("tool_calls_run_idempotency_idx").on(
+      table.agentRunId,
+      table.idempotencyKey
+    ),
+    uniqueIndex("tool_calls_run_provider_call_idx").on(
+      table.agentRunId,
+      table.providerCallId
+    ),
   ]
 );
 

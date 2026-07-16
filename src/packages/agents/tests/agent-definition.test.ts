@@ -4,6 +4,7 @@ const database = vi.hoisted(() => {
   const state = {
     selects: [] as unknown[][],
     inserts: [] as unknown[][],
+    insertErrors: [] as Array<unknown | undefined>,
     insertValues: [] as unknown[],
     updates: [] as unknown[][],
     updateValues: [] as unknown[],
@@ -23,12 +24,14 @@ const database = vi.hoisted(() => {
   };
   const insert = () => {
     const rows = state.inserts.shift() ?? [];
+    const error = state.insertErrors.shift();
     const query = {
       values: (value: unknown) => {
         state.insertValues.push(value);
         return query;
       },
-      returning: () => Promise.resolve(rows),
+      returning: () =>
+        error === undefined ? Promise.resolve(rows) : Promise.reject(error),
     };
     return query;
   };
@@ -70,12 +73,19 @@ vi.mock("@/lib/api", () => ({
 
 import { z } from "zod";
 import { createToolRegistry } from "../index";
-import { createAgentDefinition, runAgentDefinition } from "../server";
+import {
+  cancelAgentRun,
+  createAgentDefinition,
+  loadAgentRuns,
+  retryAgentRun,
+  runAgentDefinition,
+} from "../server";
 
 describe("Agent definitions", () => {
   beforeEach(() => {
     database.state.selects = [];
     database.state.inserts = [];
+    database.state.insertErrors = [];
     database.state.insertValues = [];
     database.state.updates = [];
     database.state.updateValues = [];
@@ -173,6 +183,8 @@ describe("Agent definitions", () => {
     );
     database.state.updates.push(
       [],
+      [],
+      [],
       [{ id: "run-1", status: "completed", output: "Looks good." }]
     );
     const registry = createToolRegistry([
@@ -210,6 +222,7 @@ describe("Agent definitions", () => {
         prompt: "Review this Page.",
         model,
         registry,
+        isCancellationRequested: async () => false,
       })
     ).resolves.toMatchObject({ status: "completed", output: "Looks good." });
 
@@ -241,23 +254,185 @@ describe("Agent definitions", () => {
     expect(database.state.insertValues[2]).toMatchObject({
       agentRunId: "run-1",
       providerCallId: "provider-call-1",
+      idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/),
       input: { apiKey: "[REDACTED]" },
       output: { text: "Draft" },
       failureCode: null,
+      reused: false,
     });
-    expect(database.state.updateValues[0]).toMatchObject({
-      status: "completed",
-      outputSnapshot: {
+    expect(database.state.updateValues).toContainEqual(
+      expect.objectContaining({
+        status: "completed",
+        outputSnapshot: {
+          output: "Looks good.",
+          stepCount: 2,
+          modelAttempts: 2,
+          errorCode: null,
+        },
+      })
+    );
+    expect(database.state.updateValues).toContainEqual(
+      expect.objectContaining({
+        status: "completed",
         output: "Looks good.",
         stepCount: 2,
+        modelAttempts: 2,
         errorCode: null,
+      })
+    );
+  });
+
+  it("returns owned run history with model, timing, steps, and redacted ToolCalls", async () => {
+    const createdAt = new Date("2026-07-16T10:00:00Z");
+    const completedAt = new Date("2026-07-16T10:00:02Z");
+    database.state.selects.push(
+      [
+        {
+          id: "run-1",
+          status: "failed",
+          agentSnapshot: {
+            modelPolicy: { model: "model-1" },
+          },
+          toolSnapshots: [],
+          output: null,
+          stepCount: 1,
+          modelAttempts: 3,
+          errorCode: "AI_RATE_LIMITED",
+          createdAt,
+          completedAt,
+        },
+      ],
+      [
+        {
+          id: "tool-call-1",
+          agentRunId: "run-1",
+          providerCallId: "provider-call-1",
+          name: "read_current_page",
+          input: { apiKey: "[REDACTED]" },
+          output: null,
+          risk: "low",
+          approvalState: "not_required",
+          failureCode: "TOOL_EXECUTION_FAILED",
+          startedAt: createdAt,
+          completedAt,
+          durationMs: 2_000,
+        },
+      ]
+    );
+
+    await expect(loadAgentRuns("user-1", "agent-1")).resolves.toEqual([
+      expect.objectContaining({
+        id: "run-1",
+        status: "failed",
+        modelSnapshot: { model: "model-1" },
+        steps: 1,
+        modelAttempts: 3,
+        durationMs: 2_000,
+        errorCode: "AI_RATE_LIMITED",
+        toolCalls: [
+          expect.objectContaining({
+            input: { apiKey: "[REDACTED]" },
+            failureCode: "TOOL_EXECUTION_FAILED",
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  it("cancels only an owned running AgentRun and its source AI run", async () => {
+    database.state.selects.push([
+      {
+        id: "run-1",
+        sourceRunId: "source-run-1",
+        stepCount: 2,
+        modelAttempts: 3,
       },
+    ]);
+    database.state.updates.push([], [{ id: "run-1", status: "cancelled" }]);
+
+    await expect(
+      cancelAgentRun("user-1", "agent-1", "run-1")
+    ).resolves.toMatchObject({ status: "cancelled" });
+    expect(database.state.updateValues[0]).toMatchObject({
+      status: "cancelled",
+      outputSnapshot: expect.objectContaining({
+        stepCount: 2,
+        modelAttempts: 3,
+        errorCode: "AGENT_CANCELLED",
+      }),
     });
     expect(database.state.updateValues[1]).toMatchObject({
-      status: "completed",
-      output: "Looks good.",
-      stepCount: 2,
-      errorCode: null,
+      status: "cancelled",
+      errorCode: "AGENT_CANCELLED",
+      cancellationRequestedAt: expect.any(Date),
     });
+  });
+
+  it("returns the existing retry for a duplicate retry request", async () => {
+    const existingRetry = {
+      id: "retry-run-1",
+      retryOfRunId: "run-1",
+      status: "running",
+    };
+    database.state.selects.push([existingRetry]);
+
+    await expect(
+      retryAgentRun({
+        userId: "user-1",
+        agentId: "agent-1",
+        runId: "run-1",
+      })
+    ).resolves.toEqual(existingRetry);
+    expect(database.state.insertValues).toHaveLength(0);
+  });
+
+  it("returns the winning retry when concurrent creation loses the unique race", async () => {
+    const agent = {
+      id: "agent-1",
+      name: "Coach",
+      skillVersionIds: [],
+      allowedTools: ["read_current_page"],
+      modelPolicy: { model: "model-1" },
+      maxSteps: 2,
+    };
+    const winningRetry = {
+      id: "retry-run-winner",
+      retryOfRunId: "run-1",
+      status: "running",
+    };
+    database.state.selects.push(
+      [],
+      [
+        {
+          id: "run-1",
+          pageId: "page-1",
+          promptSnapshot: "Retry me.",
+          retryRootRunId: null,
+          status: "failed",
+        },
+      ],
+      [{ id: "run-1" }],
+      [],
+      [
+        {
+          agent,
+          instructionsPageId: "instructions-1",
+          instructionsContentRevision: 4,
+          instructionsSnapshot: "Read only.",
+        },
+      ],
+      [{ id: "page-1", contentRevision: 2 }],
+      [winningRetry]
+    );
+    database.state.inserts.push([{ id: "source-run-loser" }], []);
+    database.state.insertErrors.push(undefined, { code: "23505" });
+
+    await expect(
+      retryAgentRun({
+        userId: "user-1",
+        agentId: "agent-1",
+        runId: "run-1",
+      })
+    ).resolves.toEqual(winningRetry);
   });
 });
