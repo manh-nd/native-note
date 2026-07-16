@@ -9,6 +9,7 @@ import { migratePageStoredDocument } from "@/lib/page-document";
 import { createEmptyStoredDocument } from "@/packages/documents";
 import { loadMenuSkills, loadWorkspaceSkills } from "@/packages/skills/server";
 import { WritingWorkspace } from "@/components/writing-workspace";
+import { loadActivePersonalInstructions } from "@/packages/instructions/server";
 
 export default async function WorkspacePage({
   searchParams,
@@ -51,6 +52,9 @@ export default async function WorkspacePage({
       user={session.user}
       initialActivePageId={initialActivePageId}
       defaultSidebarOpen={defaultSidebarOpen}
+      initialInstructionsPageId={
+        (await loadActivePersonalInstructions(session.user.id))?.pageId ?? null
+      }
     />
   );
 }

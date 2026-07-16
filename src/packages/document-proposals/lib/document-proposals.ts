@@ -18,6 +18,7 @@ import {
   type DocumentOperationBatch,
 } from "@/packages/document-editor";
 import { isDocumentProposalStale } from "../lifecycle";
+import type { PersonalInstructionsSnapshot } from "@/packages/instructions";
 
 export type SelectionProposalSegment = {
   blockId: string;
@@ -288,7 +289,19 @@ type SelectionRunOptions = {
     skillVersionId: string;
     policySnapshot: SelectionSkillVersion["policy"];
   };
+  instructions?: PersonalInstructionsSnapshot | null;
+  sourceRunId?: string;
 };
+
+function instructionsAudit(instructions?: PersonalInstructionsSnapshot | null) {
+  return instructions
+    ? {
+        instructionsPageId: instructions.pageId,
+        instructionsContentRevision: instructions.contentRevision,
+        instructionsSnapshot: instructions.snapshot,
+      }
+    : {};
+}
 
 async function persistSelectionRun({
   page,
@@ -302,6 +315,8 @@ async function persistSelectionRun({
   alwaysRecordRun = false,
   createProposal = true,
   audit,
+  instructions,
+  sourceRunId,
 }: SelectionRunOptions) {
   return db.transaction(async (tx) => {
     const [currentPage] = await tx
@@ -320,24 +335,29 @@ async function persistSelectionRun({
     const operations = selectionOperations(currentPage, segments);
     if (!operations.operations.length && !alwaysRecordRun)
       return { run: null, proposal: null };
-    const [run] = await tx
-      .insert(aiRuns)
-      .values({
-        pageId: currentPage.id,
-        creatorId: userId,
-        sourceKind,
-        action,
-        model,
-        status: "completed",
-        inputSnapshot: snapshot,
-        outputSnapshot: { summaryVi, segments },
-        ...(audit && {
-          contentRevision: currentPage.contentRevision,
-          skillVersionId: audit.skillVersionId,
-          policySnapshot: audit.policySnapshot,
-        }),
-      })
-      .returning();
+    const runValues: typeof aiRuns.$inferInsert = {
+      pageId: currentPage.id,
+      creatorId: userId,
+      sourceKind,
+      action,
+      model,
+      status: "completed",
+      inputSnapshot: snapshot,
+      outputSnapshot: { summaryVi, segments },
+      ...instructionsAudit(instructions),
+      ...(audit && {
+        contentRevision: currentPage.contentRevision,
+        skillVersionId: audit.skillVersionId,
+        policySnapshot: audit.policySnapshot,
+      }),
+    };
+    const [run] = sourceRunId
+      ? await tx
+          .update(aiRuns)
+          .set(runValues)
+          .where(eq(aiRuns.id, sourceRunId))
+          .returning()
+      : await tx.insert(aiRuns).values(runValues).returning();
     if (!createProposal || !operations.operations.length)
       return { run, proposal: null };
     const [proposal] = await tx
@@ -363,6 +383,8 @@ export async function createSelectionDocumentProposal({
   model,
   summaryVi,
   segments,
+  instructions,
+  sourceRunId,
 }: {
   page: Page;
   userId: string;
@@ -371,6 +393,8 @@ export async function createSelectionDocumentProposal({
   model: string;
   summaryVi: string;
   segments: SelectionProposalSegment[];
+  instructions?: PersonalInstructionsSnapshot | null;
+  sourceRunId?: string;
 }) {
   const stored = await persistSelectionRun({
     page,
@@ -381,6 +405,9 @@ export async function createSelectionDocumentProposal({
     model,
     summaryVi,
     segments,
+    instructions,
+    alwaysRecordRun: true,
+    sourceRunId,
   });
   return stored.proposal;
 }
@@ -431,6 +458,8 @@ export async function createBlockDocumentProposal({
   summaryVi,
   alternatives,
   model,
+  instructions,
+  sourceRunId,
 }: {
   page: Page;
   userId: string;
@@ -442,6 +471,8 @@ export async function createBlockDocumentProposal({
   summaryVi: string;
   alternatives: string[];
   model: string;
+  instructions?: PersonalInstructionsSnapshot | null;
+  sourceRunId?: string;
 }) {
   return db.transaction(async (tx) => {
     const [currentPage] = await tx
@@ -465,19 +496,24 @@ export async function createBlockDocumentProposal({
       result,
       behavior,
     });
-    const [run] = await tx
-      .insert(aiRuns)
-      .values({
-        pageId: currentPage.id,
-        creatorId: userId,
-        sourceKind: "block",
-        action,
-        model,
-        status: "completed",
-        inputSnapshot: expectedText,
-        outputSnapshot: { behavior, result, summaryVi, alternatives },
-      })
-      .returning();
+    const runValues: typeof aiRuns.$inferInsert = {
+      pageId: currentPage.id,
+      creatorId: userId,
+      sourceKind: "block",
+      action,
+      model,
+      status: "completed",
+      inputSnapshot: expectedText,
+      outputSnapshot: { behavior, result, summaryVi, alternatives },
+      ...instructionsAudit(instructions),
+    };
+    const [run] = sourceRunId
+      ? await tx
+          .update(aiRuns)
+          .set(runValues)
+          .where(eq(aiRuns.id, sourceRunId))
+          .returning()
+      : await tx.insert(aiRuns).values(runValues).returning();
     const [proposal] = await tx
       .insert(documentProposals)
       .values({
@@ -493,18 +529,101 @@ export async function createBlockDocumentProposal({
   });
 }
 
+export async function recordReadOnlyAiAction({
+  page,
+  userId,
+  sourceKind,
+  action,
+  model,
+  inputSnapshot,
+  outputSnapshot,
+  instructions,
+  status = "completed",
+}: {
+  page: Page;
+  userId: string;
+  sourceKind: "selection" | "block";
+  action: string;
+  model: string;
+  inputSnapshot: string;
+  outputSnapshot: unknown;
+  instructions?: PersonalInstructionsSnapshot | null;
+  status?: "completed" | "failed";
+}) {
+  const [run] = await db
+    .insert(aiRuns)
+    .values({
+      pageId: page.id,
+      creatorId: userId,
+      sourceKind,
+      action,
+      model,
+      status,
+      inputSnapshot,
+      outputSnapshot,
+      contentRevision: page.contentRevision,
+      ...instructionsAudit(instructions),
+    })
+    .returning();
+  return run;
+}
+
+export async function startAiActionRun({
+  page,
+  userId,
+  sourceKind,
+  action,
+  model,
+  inputSnapshot,
+  instructions,
+}: {
+  page: Page;
+  userId: string;
+  sourceKind: "selection" | "block";
+  action: string;
+  model: string;
+  inputSnapshot: string;
+  instructions?: PersonalInstructionsSnapshot | null;
+}) {
+  return recordReadOnlyAiAction({
+    page,
+    userId,
+    sourceKind,
+    action,
+    model,
+    inputSnapshot,
+    outputSnapshot: { errorCode: "AI_RUN_INCOMPLETE" },
+    instructions,
+    status: "failed",
+  });
+}
+
+export async function completeAiActionRun(
+  runId: string,
+  outputSnapshot: unknown
+) {
+  const [run] = await db
+    .update(aiRuns)
+    .set({ status: "completed", outputSnapshot, completedAt: new Date() })
+    .where(eq(aiRuns.id, runId))
+    .returning();
+  return run;
+}
+
 export async function createReviewDocumentProposals({
   page,
   userId,
   model,
   snapshot,
   findings: reviewFindings,
+  instructions,
 }: {
   page: Page;
   userId: string;
   model: string;
   snapshot: string;
   findings: ReviewFindingDraft[];
+  instructions?: PersonalInstructionsSnapshot | null;
 }) {
   return db.transaction(async (tx) => {
     const [currentPage] = await tx
@@ -543,6 +662,7 @@ export async function createReviewDocumentProposals({
         status: "completed",
         inputSnapshot: snapshot,
         outputSnapshot: { findings: reviewFindings },
+        ...instructionsAudit(instructions),
       })
       .returning();
     const [review] = await tx

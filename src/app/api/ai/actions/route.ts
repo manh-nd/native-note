@@ -12,7 +12,11 @@ import { rateLimit } from "@/lib/rate-limit";
 import {
   createBlockDocumentProposal,
   createSelectionDocumentProposal,
+  startAiActionRun,
+  completeAiActionRun,
 } from "@/packages/document-proposals";
+import { applyPersonalInstructions } from "@/packages/instructions";
+import { loadActivePersonalInstructions } from "@/packages/instructions/server";
 
 const actionSchema = z.enum([
   "improve",
@@ -119,6 +123,7 @@ export async function POST(request: Request) {
     rateLimit(`ai-action:${userId}`, 20);
     const input = await parseJson(request, inputSchema);
     const page = await ownedPage(userId, input.pageId);
+    const instructions = await loadActivePersonalInstructions(userId);
     const staleRequest = input.contentRevision !== page.contentRevision;
     if (staleRequest) {
       return NextResponse.json(
@@ -129,6 +134,18 @@ export async function POST(request: Request) {
         { status: 409 }
       );
     }
+    if (input.scope === "selection")
+      validateSelectionAgainstPage(page.plainText, input);
+    const sourceKind = input.scope === "block" ? "block" : "selection";
+    const run = await startAiActionRun({
+      page,
+      userId,
+      sourceKind,
+      action: input.action,
+      model: getTextModel(),
+      inputSnapshot: input.scope === "block" ? input.text : input.snapshot,
+      instructions,
+    });
 
     if (input.scope === "block") {
       const isExplanatory =
@@ -139,9 +156,10 @@ export async function POST(request: Request) {
       const output = await generateStructured(
         transformResponseSchema,
         `Action: ${input.action}\nScope: block\nTone: ${input.tone}\nText:\n${input.text}`,
-        systemInstruction
+        applyPersonalInstructions(systemInstruction, instructions)
       );
       if (isExplanatory) {
+        await completeAiActionRun(run.id, output);
         return NextResponse.json({
           ...output,
           result: input.text,
@@ -163,7 +181,10 @@ export async function POST(request: Request) {
               summaryVi: output.explanationVi,
               alternatives: output.alternatives,
               model: getTextModel(),
+              instructions,
+              sourceRunId: run.id,
             });
+      if (!proposal) await completeAiActionRun(run.id, output);
       return NextResponse.json({
         proposalId: proposal?.id,
         baseContentRevision: page.contentRevision,
@@ -178,7 +199,6 @@ export async function POST(request: Request) {
       });
     }
 
-    validateSelectionAgainstPage(page.plainText, input);
     const first = input.segments[0];
     const last = input.segments.at(-1)!;
     const contextBefore = page.plainText.slice(
@@ -207,7 +227,7 @@ export async function POST(request: Request) {
           nodeType,
         })),
       }),
-      systemInstruction
+      applyPersonalInstructions(systemInstruction, instructions)
     );
     if (request.signal.aborted)
       throw new ApiError(499, "Yêu cầu đã bị hủy.", "REQUEST_ABORTED");
@@ -236,6 +256,8 @@ export async function POST(request: Request) {
         text: source.text,
         result: outputById.get(source.id)!.result,
       })),
+      instructions,
+      sourceRunId: run.id,
     });
     return NextResponse.json({
       proposalId: proposal?.id,

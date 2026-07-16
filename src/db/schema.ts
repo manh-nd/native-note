@@ -238,6 +238,18 @@ export const skillVersions = pgTable(
   ]
 );
 
+export const personalInstructions = pgTable("personal_instructions", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  activePageId: uuid("active_page_id").references(() => pages.id, {
+    onDelete: "set null",
+  }),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
+
 export const aiRuns = pgTable("ai_runs", {
   id: uuid("id").defaultRandom().primaryKey(),
   pageId: uuid("page_id")
@@ -255,6 +267,9 @@ export const aiRuns = pgTable("ai_runs", {
   contentRevision: integer("content_revision"),
   skillVersionId: uuid("skill_version_id").references(() => skillVersions.id),
   policySnapshot: jsonb("policy_snapshot").$type<Record<string, unknown>>(),
+  instructionsPageId: uuid("instructions_page_id"),
+  instructionsContentRevision: integer("instructions_content_revision"),
+  instructionsSnapshot: text("instructions_snapshot"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

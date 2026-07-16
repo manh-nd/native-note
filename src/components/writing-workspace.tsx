@@ -25,6 +25,14 @@ import {
 } from "@/packages/document-editor";
 import type { PageDocumentProposal } from "@/packages/document-proposals";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import type { pages, skills, skillVersions } from "@/db/schema";
 import type { MenuSkill } from "@/packages/skills";
 import { Toaster } from "@/components/ui/sonner";
@@ -281,6 +289,7 @@ export function WritingWorkspace({
   user,
   initialActivePageId,
   defaultSidebarOpen = true,
+  initialInstructionsPageId = null,
 }: {
   initialPages: PageRow[];
   initialSkills: SkillRow[];
@@ -288,6 +297,7 @@ export function WritingWorkspace({
   user: User;
   initialActivePageId?: string;
   defaultSidebarOpen?: boolean;
+  initialInstructionsPageId?: string | null;
 }) {
   const [pageList, setPageList] = useState(initialPages);
   const [skillsByPageId, setSkillsByPageId] = useState<
@@ -298,6 +308,11 @@ export function WritingWorkspace({
   const [activeSkillVersions, setActiveSkillVersions] = useState<
     SkillVersionRow[]
   >([]);
+  const [instructionsPageId, setInstructionsPageId] = useState<string | null>(
+    initialInstructionsPageId
+  );
+  const [instructionsSettingsOpen, setInstructionsSettingsOpen] =
+    useState(false);
   const [menuSkills, setMenuSkills] = useState(initialMenuSkills);
   const [activeId, setActiveId] = useState(
     initialPages.some((page) => page.id === initialActivePageId)
@@ -387,6 +402,26 @@ export function WritingWorkspace({
     selectionAiRef.current = next;
     setSelectionAi(next);
   }, []);
+
+  const changePersonalInstructions = useCallback(
+    async (pageId: string | null) => {
+      try {
+        await api("/api/personal-instructions", {
+          method: "PUT",
+          body: JSON.stringify({ pageId }),
+        });
+        setInstructionsPageId(pageId);
+        setInstructionsSettingsOpen(false);
+      } catch (cause) {
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Không thể đổi Instructions cá nhân."
+        );
+      }
+    },
+    []
+  );
 
   const updatePage = useCallback(
     (updated: PageRow, kind: "content" | "metadata" | "full" = "full") => {
@@ -1696,6 +1731,51 @@ export function WritingWorkspace({
                     ))}
                 </div>
               )}
+              <section
+                className="mx-auto mb-4 flex w-full max-w-3xl items-center gap-3 rounded-lg border px-3 py-2 text-sm"
+                aria-label="Cài đặt Instructions cá nhân"
+              >
+                <span className="flex-1 font-medium">
+                  Instructions cá nhân:{" "}
+                  {pageList.find((page) => page.id === instructionsPageId)
+                    ?.title ?? "Không dùng"}
+                </span>
+                <Dialog
+                  open={instructionsSettingsOpen}
+                  onOpenChange={setInstructionsSettingsOpen}
+                >
+                  <DialogTrigger
+                    render={<Button variant="outline" size="sm" />}
+                  >
+                    Thay đổi
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Instructions cá nhân</DialogTitle>
+                      <DialogDescription>
+                        Chọn một Page để áp dụng cho các AI Action thông thường.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <select
+                      aria-label="Page Instructions đang hoạt động"
+                      className="w-full rounded border bg-background px-2 py-1"
+                      value={instructionsPageId ?? ""}
+                      onChange={(event) =>
+                        void changePersonalInstructions(
+                          event.target.value || null
+                        )
+                      }
+                    >
+                      <option value="">Không dùng</option>
+                      {pageList.map((page) => (
+                        <option key={page.id} value={page.id}>
+                          {page.title || "Không có tiêu đề"}
+                        </option>
+                      ))}
+                    </select>
+                  </DialogContent>
+                </Dialog>
+              </section>
               {activeSkill ? (
                 <section
                   className="mx-auto mb-4 flex w-full max-w-3xl flex-wrap items-center gap-3 rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm dark:border-violet-900 dark:bg-violet-950"
