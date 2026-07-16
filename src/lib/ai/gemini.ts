@@ -1,4 +1,9 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import {
+  GoogleGenAI,
+  Modality,
+  type Content,
+  type FunctionDeclaration,
+} from "@google/genai";
 import { z } from "zod";
 import { ApiError } from "../api";
 import {
@@ -336,6 +341,73 @@ export async function generateStructured<T>(
     }
   }
 
+  throw mapGeminiError(lastError, "text");
+}
+
+export async function generateAgentStep(
+  contents: Content[],
+  systemInstruction: string,
+  functionDeclarations: FunctionDeclaration[],
+  options?: GeminiRequestOptions & { model?: string }
+) {
+  const pool = getPool(options);
+  const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const maxWaitMs = options?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let lease: ApiKeyLease;
+    try {
+      lease = await pool.getNextKey({ maxWaitMs });
+    } catch (error) {
+      throw mapGeminiError(error, "text");
+    }
+    const attemptSignal = createAttemptSignal(options?.signal);
+    try {
+      const response = await clientCache
+        .get(lease.apiKey)
+        .models.generateContent({
+          model: options?.model ?? getTextModel(),
+          contents,
+          config: {
+            systemInstruction,
+            ...(functionDeclarations.length
+              ? { tools: [{ functionDeclarations }] }
+              : {}),
+            abortSignal: attemptSignal.signal,
+          },
+        });
+      const calls = (response.functionCalls ?? []).map((call, index) => ({
+        id: call.id ?? `call-${attempt}-${index}`,
+        name: call.name ?? "",
+        input: call.args ?? {},
+      }));
+      const text = response.text?.trim() || null;
+      if (!text && calls.length === 0)
+        throw new ApiError(
+          502,
+          "AI không trả về nội dung hoặc Tool call.",
+          "EMPTY_AI_RESPONSE"
+        );
+      pool.reportSuccess(lease.keyId);
+      return { text, calls };
+    } catch (error) {
+      if (error instanceof ApiError || options?.signal?.aborted)
+        throw mapGeminiError(error, "text", attemptSignal.timedOut());
+      const redacted = redactGeminiError(error, lease);
+      lastError = redacted;
+      if (!isRetryable(redacted)) {
+        logProviderFailure("text", lease, redacted, attempt);
+        throw mapGeminiError(redacted, "text", attemptSignal.timedOut());
+      }
+      logProviderFailure("text", lease, redacted, attempt);
+      pool.reportFailure(lease.keyId, redacted, {
+        cooldownMs: cooldownFor(redacted),
+      });
+    } finally {
+      attemptSignal.cleanup();
+    }
+  }
   throw mapGeminiError(lastError, "text");
 }
 

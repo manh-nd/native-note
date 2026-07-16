@@ -16,6 +16,7 @@ import {
 import type { DocumentContent } from "@/packages/documents";
 import type { DocumentOperationBatch } from "@/packages/document-editor";
 import type { PublishedSkillPolicy } from "@/packages/skills";
+import type { AgentDefinitionSnapshot, ToolSnapshot } from "@/packages/agents";
 
 export const findingCategory = pgEnum("finding_category", [
   "grammar",
@@ -67,6 +68,17 @@ export const skillOutputMode = pgEnum("skill_output_mode", [
 ]);
 export const skillStatus = pgEnum("skill_status", ["draft", "disabled"]);
 export const skillApprovalPolicy = pgEnum("skill_approval_policy", [
+  "required",
+]);
+export const agentRunStatus = pgEnum("agent_run_status", [
+  "running",
+  "completed",
+  "failed",
+  "step_limit",
+]);
+export const toolRisk = pgEnum("tool_risk", ["low", "medium", "high"]);
+export const toolApprovalState = pgEnum("tool_approval_state", [
+  "not_required",
   "required",
 ]);
 
@@ -249,6 +261,93 @@ export const personalInstructions = pgTable("personal_instructions", {
     .defaultNow()
     .notNull(),
 });
+
+export const agents = pgTable(
+  "agents",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    creatorId: text("creator_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    instructionsPageId: uuid("instructions_page_id")
+      .notNull()
+      .references(() => pages.id),
+    skillVersionIds: jsonb("skill_version_ids")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    allowedTools: jsonb("allowed_tools")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    modelPolicy: jsonb("model_policy").$type<{ model: string }>().notNull(),
+    maxSteps: integer("max_steps").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [index("agents_creator_idx").on(table.creatorId, table.createdAt)]
+);
+
+export const agentRuns = pgTable(
+  "agent_runs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    pageId: uuid("page_id")
+      .notNull()
+      .references(() => pages.id, { onDelete: "cascade" }),
+    creatorId: text("creator_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    status: agentRunStatus("status").notNull().default("running"),
+    promptSnapshot: text("prompt_snapshot").notNull(),
+    agentSnapshot: jsonb("agent_snapshot")
+      .$type<AgentDefinitionSnapshot>()
+      .notNull(),
+    toolSnapshots: jsonb("tool_snapshots").$type<ToolSnapshot[]>().notNull(),
+    output: text("output"),
+    stepCount: integer("step_count").notNull().default(0),
+    errorCode: text("error_code"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("agent_runs_agent_created_idx").on(table.agentId, table.createdAt),
+    index("agent_runs_page_created_idx").on(table.pageId, table.createdAt),
+  ]
+);
+
+export const toolCalls = pgTable(
+  "tool_calls",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    agentRunId: uuid("agent_run_id")
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: "cascade" }),
+    providerCallId: text("provider_call_id").notNull(),
+    name: text("name").notNull(),
+    input: jsonb("input").notNull(),
+    output: jsonb("output"),
+    risk: toolRisk("risk"),
+    approvalState: toolApprovalState("approval_state"),
+    failureCode: text("failure_code"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }).notNull(),
+    durationMs: integer("duration_ms").notNull(),
+  },
+  (table) => [
+    index("tool_calls_run_started_idx").on(table.agentRunId, table.startedAt),
+  ]
+);
 
 export const aiRuns = pgTable("ai_runs", {
   id: uuid("id").defaultRandom().primaryKey(),

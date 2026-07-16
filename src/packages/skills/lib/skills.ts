@@ -12,6 +12,7 @@ import {
   createSkillSelectionRun,
   type SelectionProposalSegment,
 } from "@/packages/document-proposals";
+import { READ_ONLY_AGENT_TOOLS } from "@/packages/agents";
 import {
   compileSkillDraft,
   SkillCompilationError,
@@ -26,8 +27,7 @@ type SelectionSkillSegment = Omit<SelectionProposalSegment, "result"> & {
   id: string;
   nodeType: string;
 };
-// Ticket 16 introduces the Tool registry; no Tool is accessible before then.
-const accessibleSkillTools = new Set<string>();
+const accessibleSkillTools = new Set<string>(READ_ONLY_AGENT_TOOLS);
 
 async function assertOwnedPage(userId: string, pageId: string) {
   const [page] = await db
