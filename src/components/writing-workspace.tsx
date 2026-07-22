@@ -1505,44 +1505,51 @@ export function WritingWorkspace({
       if (action === "apply") editor!.setEditable(false);
       const result = await api<{
         page?: PageRow;
-        proposal?: { operations: DocumentOperationBatch };
+        operations?: DocumentOperationBatch;
         findings?: Array<{ id: string }>;
         findingIds?: string[];
       }>(
         action === "apply"
-          ? `/api/document-proposals/${finding.proposalId}/accept`
+          ? "/api/review-findings/application"
           : action === "save"
             ? "/api/learning-items"
-            : finding.proposalId
-              ? `/api/document-proposals/${finding.proposalId}/reject`
-              : `/api/review-findings/${finding.id}/dismissal`,
+            : `/api/review-findings/${finding.id}/dismissal`,
         {
           method: "POST",
-          ...(action === "save"
-            ? { body: JSON.stringify({ findingId: finding.id }) }
-            : {}),
+          ...(action === "apply"
+            ? { body: JSON.stringify({ findingIds: [finding.id] }) }
+            : action === "save"
+              ? { body: JSON.stringify({ findingId: finding.id }) }
+              : {}),
         }
       );
       if (action === "apply" && editor) {
-        if (!result.page || !result.proposal)
+        if (!result.page)
           throw new Error("Máy chủ không trả về đề xuất canonical.");
-        try {
-          ignoreCanonicalEditorUpdate.current = true;
-          applyDocumentOperationsToEditor(
-            editor,
-            result.proposal.operations,
-            currentPage!.contentRevision,
-            "server-canonical-proposal"
-          );
-          updatePage(result.page, "full");
-          editor.commands.focus();
-        } catch {
-          ignoreCanonicalEditorUpdate.current = false;
+        if (!result.operations) {
           editor.commands.setContent(result.page.content as JSONContent, {
             emitUpdate: false,
           });
           updatePage(result.page, "full");
-          setError("Đã tải lại nội dung canonical từ máy chủ.");
+        } else {
+          try {
+            ignoreCanonicalEditorUpdate.current = true;
+            applyDocumentOperationsToEditor(
+              editor,
+              result.operations,
+              result.operations.baseContentRevision,
+              "server-canonical-proposal"
+            );
+            updatePage(result.page, "full");
+            editor.commands.focus();
+          } catch {
+            ignoreCanonicalEditorUpdate.current = false;
+            editor.commands.setContent(result.page.content as JSONContent, {
+              emitUpdate: false,
+            });
+            updatePage(result.page, "full");
+            setError("Đã tải lại nội dung canonical từ máy chủ.");
+          }
         }
       }
       const decidedFindingIds = new Set([

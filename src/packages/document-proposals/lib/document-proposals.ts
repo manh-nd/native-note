@@ -1,4 +1,5 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { diffChars } from "diff";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   aiRuns,
@@ -17,6 +18,7 @@ import {
   createDocumentTextIndex,
   createPortableExcerpt,
   type DocumentContent,
+  type DocumentOperation,
   type DocumentOperationBatch,
 } from "@/packages/document-editor";
 import { isDocumentProposalStale } from "../lifecycle";
@@ -333,37 +335,212 @@ function createReviewDocumentProposalOperations({
       );
     }
   }
-  const expectedTextByBlock = new Map(
-    textIndex.blocks.map((block) => [block.blockId, block.text])
+  const operationByFinding = new Map(
+    changedFindings.map((finding) => {
+      const expectedText = blocks.get(finding.blockId)!.text;
+      return [
+        finding,
+        {
+          baseContentRevision: contentRevision,
+          operations: [
+            {
+              type: "replace-text" as const,
+              target: {
+                blockId: finding.blockId,
+                expectedText,
+                from: finding.from,
+                to: finding.to,
+              },
+              text: finding.suggestion,
+            },
+          ],
+        } satisfies DocumentOperationBatch,
+      ];
+    })
   );
-  const operations = changedFindings
-    .slice()
-    .sort((left, right) =>
-      left.blockId === right.blockId ? right.from - left.from : 0
-    )
-    .map((finding) => {
-      const expectedText = expectedTextByBlock.get(finding.blockId)!;
-      const operation = {
-        type: "replace-text" as const,
-        target: {
-          blockId: finding.blockId,
-          expectedText,
-          from: finding.from,
-          to: finding.to,
-        },
-        text: finding.suggestion,
-      };
-      expectedTextByBlock.set(
-        finding.blockId,
-        `${expectedText.slice(0, finding.from)}${finding.suggestion}${expectedText.slice(finding.to)}`
-      );
-      return operation;
-    });
   return {
     snapshot: textIndex.text,
     blocks,
-    batch: { baseContentRevision: contentRevision, operations },
+    operationByFinding,
   };
+}
+
+export type ReviewFindingDecisionTarget = {
+  findingId: string;
+  blockId: string;
+  expectedText: string;
+  from: number;
+  to: number;
+  original: string;
+  suggestion: string;
+};
+
+type ResolvedReviewFindingTarget = ReviewFindingDecisionTarget & {
+  resolvedFrom: number;
+  resolvedTo: number;
+};
+
+function resolveReviewFindingTarget(
+  target: ReviewFindingDecisionTarget,
+  currentText: string,
+  changes?: ReturnType<typeof diffChars>
+): ResolvedReviewFindingTarget | null {
+  if (
+    target.from < 0 ||
+    target.to < target.from ||
+    target.expectedText.slice(target.from, target.to) !== target.original
+  ) {
+    return null;
+  }
+  if (target.expectedText === currentText) {
+    return {
+      ...target,
+      resolvedFrom: target.from,
+      resolvedTo: target.to,
+    };
+  }
+
+  let expectedPosition = 0;
+  let currentPosition = 0;
+  let resolvedFrom: number | undefined;
+  let resolvedTo: number | undefined;
+  for (const part of changes ?? diffChars(target.expectedText, currentText)) {
+    if (part.added) {
+      if (expectedPosition > target.from && expectedPosition < target.to)
+        return null;
+      currentPosition += part.value.length;
+      continue;
+    }
+    if (part.removed) {
+      const removedTo = expectedPosition + part.value.length;
+      if (expectedPosition < target.to && removedTo > target.from) return null;
+      expectedPosition = removedTo;
+      continue;
+    }
+
+    const unchangedTo = expectedPosition + part.value.length;
+    const overlapFrom = Math.max(expectedPosition, target.from);
+    const overlapTo = Math.min(unchangedTo, target.to);
+    if (overlapFrom < overlapTo) {
+      const currentOverlapFrom =
+        currentPosition + overlapFrom - expectedPosition;
+      const currentOverlapTo = currentPosition + overlapTo - expectedPosition;
+      if (resolvedFrom === undefined) resolvedFrom = currentOverlapFrom;
+      if (resolvedTo !== undefined && resolvedTo !== currentOverlapFrom)
+        return null;
+      resolvedTo = currentOverlapTo;
+    }
+    expectedPosition = unchangedTo;
+    currentPosition += part.value.length;
+  }
+
+  if (
+    resolvedFrom === undefined ||
+    resolvedTo === undefined ||
+    currentText.slice(resolvedFrom, resolvedTo) !== target.original
+  ) {
+    return null;
+  }
+  return { ...target, resolvedFrom, resolvedTo };
+}
+
+function resolveReviewFindingTargets({
+  content,
+  targets,
+}: {
+  content: unknown;
+  targets: ReviewFindingDecisionTarget[];
+}) {
+  const currentBlocks = new Map(
+    createPortableExcerpt(content).map((block) => [block.blockId, block.text])
+  );
+  const changesByTargetText = new Map<string, ReturnType<typeof diffChars>>();
+  return targets.map((target) => {
+    const currentText = currentBlocks.get(target.blockId);
+    const changesKey = `${target.blockId}\u0000${target.expectedText}`;
+    const changes =
+      currentText === undefined || currentText === target.expectedText
+        ? undefined
+        : (changesByTargetText.get(changesKey) ??
+          diffChars(target.expectedText, currentText));
+    if (changes) changesByTargetText.set(changesKey, changes);
+    return {
+      target,
+      currentText,
+      resolved:
+        currentText === undefined
+          ? null
+          : resolveReviewFindingTarget(target, currentText, changes),
+    };
+  });
+}
+
+export function createReviewFindingDecisionBatch({
+  content,
+  contentRevision,
+  targets,
+}: {
+  content: unknown;
+  contentRevision: number;
+  targets: ReviewFindingDecisionTarget[];
+}): DocumentOperationBatch {
+  if (!targets.length) {
+    throw new ApiError(400, "Danh sách góp ý trống.", "INVALID_INPUT");
+  }
+  const resolved = resolveReviewFindingTargets({ content, targets });
+  if (resolved.some((item) => !item.resolved)) {
+    throw new ApiError(
+      409,
+      "Nội dung của góp ý đã thay đổi. Hãy chạy lại review.",
+      "STALE_FINDING"
+    );
+  }
+  const ordered = resolved
+    .map((item) => ({
+      ...item.resolved!,
+      currentText: item.currentText!,
+    }))
+    .sort(
+      (left, right) =>
+        left.blockId.localeCompare(right.blockId) ||
+        right.resolvedFrom - left.resolvedFrom
+    );
+  for (let index = 1; index < ordered.length; index += 1) {
+    const previous = ordered[index - 1];
+    const current = ordered[index];
+    if (
+      previous.blockId === current.blockId &&
+      current.resolvedTo > previous.resolvedFrom
+    ) {
+      throw new ApiError(
+        409,
+        "Các góp ý được chọn chồng lấp nhau.",
+        "OVERLAPPING_FINDINGS"
+      );
+    }
+  }
+
+  const expectedTextByBlock = new Map<string, string>();
+  const operations: DocumentOperation[] = [];
+  for (const target of ordered) {
+    const expectedText =
+      expectedTextByBlock.get(target.blockId) ?? target.currentText;
+    operations.push({
+      type: "replace-text",
+      target: {
+        blockId: target.blockId,
+        expectedText,
+        from: target.resolvedFrom,
+        to: target.resolvedTo,
+      },
+      text: target.suggestion,
+    });
+    expectedTextByBlock.set(
+      target.blockId,
+      `${expectedText.slice(0, target.resolvedFrom)}${target.suggestion}${expectedText.slice(target.resolvedTo)}`
+    );
+  }
+  return { baseContentRevision: contentRevision, operations };
 }
 
 function selectionOperations(
@@ -813,30 +990,28 @@ export async function createReviewDocumentProposals({
       })
       .returning();
 
-    const [proposal] = reviewProposal.batch.operations.length
-      ? await tx
-          .insert(documentProposals)
-          .values({
-            pageId: currentPage.id,
-            sourceRunId: run.id,
-            creatorId: userId,
-            baseContentRevision: currentPage.contentRevision,
-            operations: reviewProposal.batch,
-            summaryVi: reviewFindings.find(
-              (finding) => finding.original !== finding.suggestion
-            )!.explanationVi,
-          })
-          .returning()
-      : [];
     const storedFindings = [];
     for (const finding of reviewFindings) {
       const block = reviewProposal.blocks.get(finding.blockId)!;
+      const operations = reviewProposal.operationByFinding.get(finding);
+      const [proposal] = operations
+        ? await tx
+            .insert(documentProposals)
+            .values({
+              pageId: currentPage.id,
+              sourceRunId: run.id,
+              creatorId: userId,
+              baseContentRevision: currentPage.contentRevision,
+              operations,
+              summaryVi: finding.explanationVi,
+            })
+            .returning()
+        : [];
       const [stored] = await tx
         .insert(findings)
         .values({
           reviewId: review.id,
-          proposalId:
-            finding.original === finding.suggestion ? undefined : proposal?.id,
+          proposalId: proposal?.id,
           category: finding.category,
           original: finding.original,
           suggestion: finding.suggestion,
@@ -860,8 +1035,13 @@ async function ownedProposal(
   proposalId: string
 ) {
   const [row] = await tx
-    .select({ proposal: documentProposals, page: pages })
+    .select({
+      proposal: documentProposals,
+      page: pages,
+      sourceKind: aiRuns.sourceKind,
+    })
     .from(documentProposals)
+    .innerJoin(aiRuns, eq(documentProposals.sourceRunId, aiRuns.id))
     .innerJoin(pages, eq(documentProposals.pageId, pages.id))
     .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
     .where(
@@ -932,15 +1112,6 @@ async function rejectPendingProposal(
       )
     )
     .returning();
-}
-
-async function rejectProposalAndDismissLinkedFindings(
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-  proposal: Proposal | null
-) {
-  if (proposal?.status !== "pending") return [];
-  await rejectPendingProposal(tx, proposal.id);
-  return (await rejectLinkedFindings(tx, proposal.id)).map((item) => item.id);
 }
 
 async function acceptLinkedFindings(
@@ -1017,10 +1188,232 @@ async function ownedFinding(
     .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
     .leftJoin(documentProposals, eq(findings.proposalId, documentProposals.id))
     .where(and(eq(findings.id, findingId), eq(workspaces.userId, userId)))
-    .for("update", { of: [findings, documentProposals] })
+    .for("update", { of: [findings] })
     .limit(1);
   if (!row) throw new ApiError(404, "Không tìm thấy góp ý.", "NOT_FOUND");
   return row;
+}
+
+function reviewFindingDecisionTarget(
+  finding: typeof findings.$inferSelect,
+  proposal: Proposal
+): ReviewFindingDecisionTarget {
+  const candidates = proposal.operations.operations.filter(
+    (operation) =>
+      operation.type === "replace-text" &&
+      operation.text === finding.suggestion &&
+      operation.target.expectedText.slice(
+        operation.target.from,
+        operation.target.to
+      ) === finding.original
+  );
+  if (candidates.length !== 1 || candidates[0].type !== "replace-text") {
+    throw new ApiError(
+      409,
+      "Góp ý không có thay đổi tài liệu hợp lệ.",
+      "INVALID_FINDING_TARGET"
+    );
+  }
+  const operation = candidates[0];
+  return {
+    findingId: finding.id,
+    blockId: operation.target.blockId,
+    expectedText: operation.target.expectedText,
+    from: operation.target.from,
+    to: operation.target.to,
+    original: finding.original,
+    suggestion: finding.suggestion,
+  };
+}
+
+async function ownedFindingsForApplication(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  userId: string,
+  findingIds: string[]
+) {
+  const rows = await tx
+    .select({
+      finding: findings,
+      proposal: documentProposals,
+      review: reviews,
+      page: pages,
+    })
+    .from(findings)
+    .innerJoin(reviews, eq(findings.reviewId, reviews.id))
+    .innerJoin(pages, eq(reviews.pageId, pages.id))
+    .innerJoin(workspaces, eq(pages.workspaceId, workspaces.id))
+    .innerJoin(documentProposals, eq(findings.proposalId, documentProposals.id))
+    .where(and(inArray(findings.id, findingIds), eq(workspaces.userId, userId)))
+    .orderBy(asc(findings.id))
+    .for("update", { of: [findings, pages, documentProposals] });
+  if (rows.length !== findingIds.length) {
+    throw new ApiError(
+      404,
+      "Không tìm thấy tất cả góp ý được chọn.",
+      "FINDINGS_NOT_FOUND"
+    );
+  }
+  return rows;
+}
+
+export async function applyReviewFindings(
+  userId: string,
+  selectedFindingIds: string[]
+) {
+  const findingIds = [...new Set(selectedFindingIds)];
+  if (!findingIds.length || findingIds.length !== selectedFindingIds.length) {
+    throw new ApiError(400, "Danh sách góp ý không hợp lệ.", "INVALID_INPUT");
+  }
+  const result = await db.transaction(async (tx) => {
+    const rows = await ownedFindingsForApplication(tx, userId, findingIds);
+    const page = rows[0].page;
+    if (rows.some((row) => row.page.id !== page.id)) {
+      throw new ApiError(
+        409,
+        "Các góp ý phải thuộc cùng một Page.",
+        "FINDINGS_PAGE_MISMATCH"
+      );
+    }
+    const rowByFindingId = new Map(rows.map((row) => [row.finding.id, row]));
+    const orderedRows = findingIds.map((id) => rowByFindingId.get(id)!);
+    if (orderedRows.every(({ finding }) => finding.status === "applied")) {
+      return {
+        page,
+        findings: orderedRows.map(({ finding }) => finding),
+        findingIds,
+        idempotent: true as const,
+      };
+    }
+    if (orderedRows.some(({ finding }) => finding.status !== "pending")) {
+      throw new ApiError(
+        409,
+        "Ít nhất một góp ý không còn chờ xử lý.",
+        "FINDING_DECIDED"
+      );
+    }
+
+    const targets = orderedRows.map(({ finding, proposal }) =>
+      reviewFindingDecisionTarget(finding, proposal)
+    );
+    const resolved = resolveReviewFindingTargets({
+      content: page.content,
+      targets,
+    });
+    const staleFindingIds = resolved.flatMap(
+      ({ target, resolved: targetRow }) => (targetRow ? [] : [target.findingId])
+    );
+    if (staleFindingIds.length) {
+      await tx
+        .update(findings)
+        .set({ status: "stale" })
+        .where(
+          and(
+            inArray(findings.id, staleFindingIds),
+            eq(findings.status, "pending")
+          )
+        );
+      return { staleFindingIds };
+    }
+
+    const operations = createReviewFindingDecisionBatch({
+      content: page.content,
+      contentRevision: page.contentRevision,
+      targets,
+    });
+    const applied = applyDocumentOperations({
+      content: page.content,
+      contentRevision: page.contentRevision,
+      batch: operations,
+    });
+    const now = new Date();
+    const [updatedPage] = await tx
+      .update(pages)
+      .set({
+        content: applied.content,
+        plainText: applied.plainText,
+        contentRevision: sql`${pages.contentRevision} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(pages.id, page.id),
+          eq(pages.contentRevision, page.contentRevision)
+        )
+      )
+      .returning();
+    if (!updatedPage) {
+      throw new ApiError(
+        409,
+        "Nội dung đã thay đổi.",
+        "CONTENT_REVISION_CONFLICT"
+      );
+    }
+    const appliedFindings = await tx
+      .update(findings)
+      .set({ status: "applied" })
+      .where(
+        and(inArray(findings.id, findingIds), eq(findings.status, "pending"))
+      )
+      .returning();
+    if (appliedFindings.length !== findingIds.length) {
+      throw new ApiError(
+        409,
+        "Góp ý vừa được xử lý ở nơi khác.",
+        "FINDING_DECIDED"
+      );
+    }
+
+    const reviewByFindingId = new Map(
+      orderedRows.map(({ finding, review }) => [finding.id, review])
+    );
+    await tx
+      .insert(learningItems)
+      .values(
+        appliedFindings.map((finding) => ({
+          userId,
+          findingId: finding.id,
+          category: finding.category,
+          originalPattern: finding.original,
+          targetExpression: finding.suggestion,
+          explanationVi: finding.explanationVi,
+          sourceContext: reviewByFindingId
+            .get(finding.id)!
+            .snapshot.slice(0, 1500),
+        }))
+      )
+      .onConflictDoNothing({ target: learningItems.findingId });
+    const proposalIds = [
+      ...new Set(orderedRows.map(({ proposal }) => proposal.id)),
+    ];
+    await tx
+      .update(documentProposals)
+      .set({ status: "accepted", decidedAt: now })
+      .where(
+        and(
+          inArray(documentProposals.id, proposalIds),
+          eq(documentProposals.status, "pending")
+        )
+      );
+
+    const appliedById = new Map(
+      appliedFindings.map((finding) => [finding.id, finding])
+    );
+    return {
+      page: updatedPage,
+      operations,
+      findings: findingIds.map((id) => appliedById.get(id)!),
+      findingIds,
+      idempotent: false as const,
+    };
+  });
+  if ("staleFindingIds" in result) {
+    throw new ApiError(
+      409,
+      "Nội dung của góp ý đã thay đổi. Hãy chạy lại review.",
+      "STALE_FINDING"
+    );
+  }
+  return result;
 }
 
 export async function loadPageDocumentProposals(
@@ -1043,6 +1436,7 @@ export async function loadPageDocumentProposals(
       .where(
         and(
           eq(documentProposals.pageId, pageId),
+          ne(aiRuns.sourceKind, "review"),
           inArray(documentProposals.status, ["pending", "stale"])
         )
       )
@@ -1153,7 +1547,18 @@ export async function acceptDocumentProposal(
   proposalId: string
 ) {
   const result = await db.transaction(async (tx) => {
-    const { proposal, page } = await ownedProposal(tx, userId, proposalId);
+    const { proposal, page, sourceKind } = await ownedProposal(
+      tx,
+      userId,
+      proposalId
+    );
+    if (sourceKind === "review") {
+      throw new ApiError(
+        409,
+        "Hãy áp dụng góp ý bằng mã Finding.",
+        "REVIEW_FINDING_DECISION_REQUIRED"
+      );
+    }
     if (proposal.status === "accepted")
       return { page, proposal, idempotent: true };
     if (proposal.status !== "pending")
@@ -1241,7 +1646,18 @@ export async function rejectDocumentProposal(
   proposalId: string
 ) {
   return db.transaction(async (tx) => {
-    const { proposal } = await ownedProposal(tx, userId, proposalId);
+    const { proposal, sourceKind } = await ownedProposal(
+      tx,
+      userId,
+      proposalId
+    );
+    if (sourceKind === "review") {
+      throw new ApiError(
+        409,
+        "Hãy xử lý góp ý bằng mã Finding.",
+        "REVIEW_FINDING_DECISION_REQUIRED"
+      );
+    }
     if (proposal.status === "rejected") return { proposal, idempotent: true };
     if (proposal.status !== "pending")
       throw new ApiError(
@@ -1304,14 +1720,13 @@ export async function createLearningItemFromFinding(
         sourceContext: review.snapshot.slice(0, 1500),
       })
       .onConflictDoNothing({ target: learningItems.findingId });
-    const dismissedFindingIds = await rejectProposalAndDismissLinkedFindings(
-      tx,
-      proposal
-    );
+    if (proposal?.status === "pending") {
+      await rejectPendingProposal(tx, proposal.id);
+    }
     return {
       finding: saved,
       proposal,
-      findingIds: [saved.id, ...dismissedFindingIds],
+      findingIds: [saved.id],
       idempotent: false,
     };
   });
@@ -1338,14 +1753,13 @@ export async function dismissReviewFinding(userId: string, findingId: string) {
         "FINDING_DECIDED"
       );
     }
-    const dismissedFindingIds = await rejectProposalAndDismissLinkedFindings(
-      tx,
-      proposal
-    );
+    if (proposal?.status === "pending") {
+      await rejectPendingProposal(tx, proposal.id);
+    }
     return {
       finding: dismissed,
       proposal,
-      findingIds: [dismissed.id, ...dismissedFindingIds],
+      findingIds: [dismissed.id],
       idempotent: false,
     };
   });

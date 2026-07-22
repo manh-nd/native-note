@@ -1,10 +1,12 @@
 export {
   acceptDocumentProposal,
+  applyReviewFindings,
   createAgentDocumentProposal,
   createBlockDocumentProposal,
   createBlockDocumentProposalOperations,
   createLearningItemFromFinding,
   createReviewDocumentProposals,
+  createReviewFindingDecisionBatch,
   createSkillSelectionRun,
   createSelectionDocumentProposal,
   dismissReviewFinding,
@@ -18,6 +20,7 @@ export {
   type BlockProposalBehavior,
   type CreateAgentDocumentProposalInput,
   type ReviewFindingDraft,
+  type ReviewFindingDecisionTarget,
   type SelectionProposalSegment,
 } from "./lib/document-proposals";
 export {
