@@ -469,18 +469,28 @@ describe("AgentSchedule delivery", () => {
             maxSteps: 2,
           },
           prompt: "Review this Page.",
-          context: {
-            userId: "user-1",
-            currentPageId: "11111111-1111-4111-8111-111111111111",
-          },
-          provenance: {
-            sourceRunId: "source-run-1",
-            agentRunId: "run-1",
-            idempotencyScopeId: "run-1",
-          },
           tools,
           model,
-          audit: async () => undefined,
+          executeToolCall: async (request) => {
+            const result = await tools.execute(
+              request.name,
+              request.input,
+              {
+                userId: "user-1",
+                currentPageId: "11111111-1111-4111-8111-111111111111",
+                provenance: {
+                  sourceRunId: "source-run-1",
+                  agentRunId: "run-1",
+                  providerToolCallId: request.toolCallId,
+                  idempotencyKey: request.idempotencyKey,
+                  idempotencyScopeId: "run-1",
+                },
+              },
+              [CREATE_DOCUMENT_PROPOSAL_TOOL],
+              { transaction: database.db as never }
+            );
+            return { status: "completed", output: result.output };
+          },
         });
         expect(scheduleDeliveryId).toBe("delivery-1");
         expect(run).toMatchObject({

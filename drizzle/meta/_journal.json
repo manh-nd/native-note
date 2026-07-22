@@ -169,6 +169,20 @@
       "when": 1784218450433,
       "tag": "0023_lame_praxagora",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784728658771,
+      "tag": "0024_past_winter_soldier",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784730533518,
+      "tag": "0025_clumsy_stryfe",
+      "breakpoints": true
     }
   ]
 }

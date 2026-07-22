@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   createLiveToken,
+  generateAgentStep,
   generateStructured,
   redactGeminiError,
   toGeminiJsonSchema,
@@ -65,6 +66,21 @@ describe("Gemini AI client", () => {
     ).resolves.toEqual({ value: "ok" });
     expect(pool.reportSuccess).toHaveBeenCalledWith("gemini-key-1");
     expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("assigns unique invocation ids when Gemini omits function-call ids", async () => {
+    mockGenerateContent.mockResolvedValue({
+      text: null,
+      functionCalls: [{ name: "read_current_page", args: {} }],
+    });
+    const pool = poolFor({ keyId: "gemini-key-1", apiKey: "key-one" });
+
+    const first = await generateAgentStep([], "system", [], { keyPool: pool });
+    const second = await generateAgentStep([], "system", [], { keyPool: pool });
+
+    expect(first.calls[0]?.id).toBeTruthy();
+    expect(second.calls[0]?.id).toBeTruthy();
+    expect(second.calls[0]?.id).not.toBe(first.calls[0]?.id);
   });
 
   it("strips Zod-only JSON Schema keywords before sending to Gemini", () => {

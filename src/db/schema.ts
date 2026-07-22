@@ -104,6 +104,11 @@ export const toolApprovalState = pgEnum("tool_approval_state", [
   "approved",
   "denied",
 ]);
+export const toolExecutionStatus = pgEnum("tool_execution_status", [
+  "executing",
+  "completed",
+  "failed",
+]);
 export const learningItemRecommendationStatus = pgEnum(
   "learning_item_recommendation_status",
   ["pending", "approved", "rejected"]
@@ -445,10 +450,44 @@ export const agentRuns = pgTable(
   ]
 );
 
+export const toolCallExecutions = pgTable(
+  "tool_call_executions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    idempotencyScopeId: uuid("idempotency_scope_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    claimedByAgentRunId: uuid("claimed_by_agent_run_id")
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: "cascade" }),
+    claimedByProviderCallId: text("claimed_by_provider_call_id").notNull(),
+    name: text("name").notNull(),
+    auditInput: jsonb("audit_input").notNull(),
+    auditOutput: jsonb("audit_output"),
+    result: jsonb("result"),
+    risk: toolRisk("risk").notNull(),
+    approvalState: toolApprovalState("approval_state").notNull(),
+    status: toolExecutionStatus("status").notNull(),
+    failureCode: text("failure_code"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    durationMs: integer("duration_ms"),
+  },
+  (table) => [
+    uniqueIndex("tool_call_executions_idempotency_idx").on(
+      table.idempotencyScopeId,
+      table.idempotencyKey
+    ),
+    index("tool_call_executions_claimed_run_idx").on(table.claimedByAgentRunId),
+  ]
+);
+
 export const toolCalls = pgTable(
   "tool_calls",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    executionId: uuid("execution_id").references(() => toolCallExecutions.id, {
+      onDelete: "cascade",
+    }),
     agentRunId: uuid("agent_run_id")
       .notNull()
       .references(() => agentRuns.id, { onDelete: "cascade" }),
@@ -466,6 +505,7 @@ export const toolCalls = pgTable(
     reused: boolean("reused").notNull().default(false),
   },
   (table) => [
+    index("tool_calls_execution_idx").on(table.executionId),
     index("tool_calls_run_started_idx").on(table.agentRunId, table.startedAt),
     index("tool_calls_run_idempotency_idx").on(
       table.agentRunId,
@@ -473,7 +513,8 @@ export const toolCalls = pgTable(
     ),
     uniqueIndex("tool_calls_run_provider_call_idx").on(
       table.agentRunId,
-      table.providerCallId
+      table.providerCallId,
+      table.idempotencyKey
     ),
   ]
 );

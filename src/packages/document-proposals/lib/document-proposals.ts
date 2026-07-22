@@ -186,9 +186,12 @@ async function findAgentProposalByIdempotency(
 }
 
 export async function createAgentDocumentProposal(
-  input: CreateAgentDocumentProposalInput
+  input: CreateAgentDocumentProposalInput,
+  transaction?: Parameters<Parameters<typeof db.transaction>[0]>[0]
 ) {
-  return db.transaction(async (tx) => {
+  const create = async (
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0]
+  ) => {
     const existing = await findAgentProposalByIdempotency(tx, input);
     if (existing) return idempotentAgentProposal(existing, input);
 
@@ -251,7 +254,8 @@ export async function createAgentDocumentProposal(
     const winner = await findAgentProposalByIdempotency(tx, input);
     if (!winner) throw new Error("DocumentProposal was not created.");
     return idempotentAgentProposal(winner, input);
-  });
+  };
+  return transaction ? create(transaction) : db.transaction(create);
 }
 
 export type PageDocumentProposal = Proposal & {

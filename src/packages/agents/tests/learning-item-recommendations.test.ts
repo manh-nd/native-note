@@ -5,6 +5,7 @@ const database = vi.hoisted(() => {
     selects: [] as unknown[][],
     inserts: [] as unknown[][],
     insertValues: [] as unknown[],
+    leftJoins: [] as Array<{ on: unknown }>,
     updates: [] as unknown[][],
     updateValues: [] as unknown[],
   };
@@ -13,7 +14,10 @@ const database = vi.hoisted(() => {
     const query = {
       from: () => query,
       innerJoin: () => query,
-      leftJoin: () => query,
+      leftJoin: (_table: unknown, on: unknown) => {
+        state.leftJoins.push({ on });
+        return query;
+      },
       where: () => query,
       for: () => query,
       limit: () => Promise.resolve(rows),
@@ -90,11 +94,30 @@ const input = {
   sourceEvidence: "I has a plan.",
 };
 
+function sqlColumnNames(value: unknown) {
+  const names: string[] = [];
+  const visit = (chunk: unknown) => {
+    if (!chunk || typeof chunk !== "object") return;
+    if ("name" in chunk && "table" in chunk && typeof chunk.name === "string") {
+      names.push(chunk.name);
+      return;
+    }
+    if (Array.isArray(chunk)) {
+      chunk.forEach(visit);
+      return;
+    }
+    if ("queryChunks" in chunk) visit(chunk.queryChunks);
+  };
+  visit(value);
+  return names;
+}
+
 describe("Agent LearningItem recommendations", () => {
   beforeEach(() => {
     database.state.selects = [];
     database.state.inserts = [];
     database.state.insertValues = [];
+    database.state.leftJoins = [];
     database.state.updates = [];
     database.state.updateValues = [];
   });
@@ -171,7 +194,7 @@ describe("Agent LearningItem recommendations", () => {
     expect(database.state.insertValues).toHaveLength(1);
   });
 
-  it("approves an owned, valid recommendation atomically into one active LearningItem", async () => {
+  it("approves an owned recommendation and updates both ToolCall audit records", async () => {
     database.state.selects.push([
       {
         recommendation: {
@@ -187,6 +210,7 @@ describe("Agent LearningItem recommendations", () => {
           status: "pending",
         },
         learningItemId: null,
+        toolCallExecutionId: "execution-1",
       },
     ]);
     database.state.inserts.push([{ id: "learning-item-1" }]);
@@ -217,10 +241,14 @@ describe("Agent LearningItem recommendations", () => {
     expect(database.state.updateValues).toEqual([
       expect.objectContaining({ status: "approved" }),
       { approvalState: "approved" },
+      { approvalState: "approved" },
     ]);
+    expect(sqlColumnNames(database.state.leftJoins[1]?.on)).toContain(
+      "idempotency_key"
+    );
   });
 
-  it("rejects idempotently without creating a LearningItem and records the denied audit decision", async () => {
+  it("rejects idempotently and updates both ToolCall audit records", async () => {
     const pending = {
       recommendation: {
         id: "recommendation-1",
@@ -230,6 +258,7 @@ describe("Agent LearningItem recommendations", () => {
         status: "pending",
       },
       learningItemId: null,
+      toolCallExecutionId: "execution-1",
     };
     const rejected = {
       recommendation: { ...pending.recommendation, status: "rejected" },
@@ -257,6 +286,7 @@ describe("Agent LearningItem recommendations", () => {
     expect(database.state.insertValues).toHaveLength(0);
     expect(database.state.updateValues).toEqual([
       expect.objectContaining({ status: "rejected" }),
+      { approvalState: "denied" },
       { approvalState: "denied" },
     ]);
   });

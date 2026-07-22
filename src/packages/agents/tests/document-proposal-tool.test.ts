@@ -47,11 +47,16 @@ describe("create DocumentProposal Agent Tool", () => {
       status: "pending" as const,
     }));
     const tools = createInitialToolRegistry({ createDocumentProposal });
+    const transaction = {} as never;
 
     await expect(
-      tools.execute(CREATE_DOCUMENT_PROPOSAL_TOOL, input, context, [
+      tools.execute(
         CREATE_DOCUMENT_PROPOSAL_TOOL,
-      ])
+        input,
+        context,
+        [CREATE_DOCUMENT_PROPOSAL_TOOL],
+        { transaction }
+      )
     ).resolves.toMatchObject({
       output: {
         proposalId: "44444444-4444-4444-8444-444444444444",
@@ -59,20 +64,23 @@ describe("create DocumentProposal Agent Tool", () => {
       },
       snapshot: { risk: "medium", approval: "not_required" },
     });
-    expect(createDocumentProposal).toHaveBeenCalledWith({
-      userId: "user-1",
-      pageId: context.currentPageId,
-      sourceRunId: context.provenance.sourceRunId,
-      agentRunId: context.provenance.agentRunId,
-      providerToolCallId: context.provenance.providerToolCallId,
-      toolCallIdempotencyKey: context.provenance.idempotencyKey,
-      idempotencyScopeId: context.provenance.idempotencyScopeId,
-      summary: input.summary,
-      operations: {
-        baseContentRevision: 4,
-        operations: input.operations,
+    expect(createDocumentProposal).toHaveBeenCalledWith(
+      {
+        userId: "user-1",
+        pageId: context.currentPageId,
+        sourceRunId: context.provenance.sourceRunId,
+        agentRunId: context.provenance.agentRunId,
+        providerToolCallId: context.provenance.providerToolCallId,
+        toolCallIdempotencyKey: context.provenance.idempotencyKey,
+        idempotencyScopeId: context.provenance.idempotencyScopeId,
+        summary: input.summary,
+        operations: {
+          baseContentRevision: 4,
+          operations: input.operations,
+        },
       },
-    });
+      transaction
+    );
   });
 
   it("rejects invalid or unauditable operation requests before persistence", async () => {

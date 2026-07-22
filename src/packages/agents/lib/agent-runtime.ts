@@ -1,11 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  ToolExecutionError,
-  type ToolContext,
-  type ToolRegistry,
-  type ToolRisk,
-  type ToolSnapshot,
-} from "./tool-registry";
+import { type ToolRegistry, type ToolSnapshot } from "./tool-registry";
 
 export const AGENT_MAX_STEPS = 6;
 export const AGENT_MODEL_MAX_ATTEMPTS = 3;
@@ -57,6 +51,21 @@ export type AgentToolRequest = {
   input: unknown;
 };
 
+export type ToolCallRequest = {
+  toolCallId: string;
+  idempotencyKey: string;
+  name: string;
+  input: unknown;
+};
+
+export type ToolCallOutcome =
+  | { status: "completed" | "reused"; output: unknown }
+  | { status: "failed"; failureCode: string };
+
+export type ExecuteToolCall = (
+  request: ToolCallRequest
+) => Promise<ToolCallOutcome>;
+
 export type AgentModelRequest = {
   prompt: string;
   agentSnapshot: AgentDefinitionSnapshot;
@@ -68,29 +77,6 @@ export type AgentModelRequest = {
 export type AgentModel = (
   request: AgentModelRequest
 ) => Promise<{ text: string | null; calls: AgentToolRequest[] }>;
-
-export type ToolCallAudit = {
-  toolCallId: string;
-  idempotencyKey: string;
-  name: string;
-  input: unknown;
-  output: unknown | null;
-  risk: ToolRisk;
-  approvalState: "not_required" | "pending" | "approved" | "denied";
-  startedAt: Date;
-  completedAt: Date;
-  durationMs: number;
-  failureCode: string | null;
-  reused: boolean;
-};
-
-export type CompletedToolCall = {
-  name: string;
-  input: unknown;
-  output: unknown;
-  risk: ToolRisk;
-  approvalState: ToolCallAudit["approvalState"];
-};
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -122,35 +108,24 @@ export type AgentRunResult = {
 export async function runAgent({
   definition,
   prompt,
-  context,
   tools,
   model,
-  audit,
+  executeToolCall,
   signal,
-  findCompletedToolCallByIdempotencyKey,
   isCancellationRequested,
   onProgress,
-  provenance,
 }: {
   definition: AgentDefinitionSnapshot;
   prompt: string;
-  context: ToolContext;
   tools: ToolRegistry;
   model: AgentModel;
-  audit: (entry: ToolCallAudit) => Promise<void>;
+  executeToolCall: ExecuteToolCall;
   signal?: AbortSignal;
-  findCompletedToolCallByIdempotencyKey?: (
-    idempotencyKey: string
-  ) => Promise<CompletedToolCall | undefined>;
   isCancellationRequested?: () => Promise<boolean>;
   onProgress?: (progress: {
     steps: number;
     modelAttempts: number;
   }) => Promise<void>;
-  provenance?: Omit<
-    NonNullable<ToolContext["provenance"]>,
-    "providerToolCallId" | "idempotencyKey"
-  >;
 }): Promise<AgentRunResult> {
   const maxSteps = Math.min(Math.max(definition.maxSteps, 1), AGENT_MAX_STEPS);
   const agentSnapshot = {
@@ -163,7 +138,6 @@ export async function runAgent({
   };
   const toolSnapshots = tools.snapshots(agentSnapshot.allowedTools);
   const history: AgentHistoryItem[] = [{ role: "user", text: prompt }];
-  const completedToolCalls = new Map<string, CompletedToolCall>();
   let modelAttempts = 0;
 
   const terminalResult = (
@@ -222,117 +196,20 @@ export async function runAgent({
     for (const call of response.calls) {
       if (await shouldCancel()) return cancelled(step);
       const idempotencyKey = toolCallIdempotencyKey(call.name, call.input);
-      const locallyCompleted = completedToolCalls.get(idempotencyKey);
-      const previous =
-        locallyCompleted ??
-        (await findCompletedToolCallByIdempotencyKey?.(idempotencyKey));
-      if (previous) {
-        if (previous.name !== call.name) {
-          return terminalResult("failed", step, "TOOL_IDEMPOTENCY_CONFLICT");
-        }
-        completedToolCalls.set(idempotencyKey, previous);
-        const reusedAt = new Date();
-        await audit({
-          toolCallId: call.id,
-          idempotencyKey,
-          name: call.name,
-          input: previous.input,
-          output: previous.output,
-          risk: previous.risk,
-          approvalState: previous.approvalState,
-          startedAt: reusedAt,
-          completedAt: reusedAt,
-          durationMs: 0,
-          failureCode: null,
-          reused: true,
-        });
-        history.push({
-          role: "tool",
-          toolCallId: call.id,
-          name: call.name,
-          output: previous.output,
-        });
-        continue;
-      }
-      const startedAt = new Date();
-      try {
-        const result = await tools.execute(
-          call.name,
-          call.input,
-          {
-            ...context,
-            provenance: provenance
-              ? {
-                  ...provenance,
-                  providerToolCallId: call.id,
-                  idempotencyKey,
-                }
-              : undefined,
-          },
-          agentSnapshot.allowedTools
-        );
-        const completedAt = new Date();
-        await audit({
-          toolCallId: call.id,
-          idempotencyKey,
-          name: call.name,
-          input: result.auditInput,
-          output: result.auditOutput,
-          risk: result.snapshot.risk,
-          approvalState:
-            result.snapshot.approval === "required"
-              ? "pending"
-              : "not_required",
-          startedAt,
-          completedAt,
-          durationMs: completedAt.getTime() - startedAt.getTime(),
-          failureCode: null,
-          reused: false,
-        });
-        completedToolCalls.set(idempotencyKey, {
-          name: call.name,
-          input: result.auditInput,
-          output: result.output,
-          risk: result.snapshot.risk,
-          approvalState:
-            result.snapshot.approval === "required"
-              ? "pending"
-              : "not_required",
-        });
-        history.push({
-          role: "tool",
-          toolCallId: call.id,
-          name: call.name,
-          output: result.output,
-        });
-      } catch (error) {
-        const completedAt = new Date();
-        const failureCode =
-          error instanceof ToolExecutionError
-            ? error.code
-            : "TOOL_EXECUTION_FAILED";
-        const toolSnapshot = toolSnapshots.find(
-          (snapshot) => snapshot.name === call.name
-        );
-        await audit({
-          toolCallId: call.id,
-          idempotencyKey,
-          name: call.name,
-          input: "[REDACTED:INVALID_OR_UNAUTHORIZED_TOOL_INPUT]",
-          output: null,
-          risk: toolSnapshot?.risk ?? "high",
-          approvalState:
-            toolSnapshot?.approval === "not_required"
-              ? "not_required"
-              : "pending",
-          startedAt,
-          completedAt,
-          durationMs: completedAt.getTime() - startedAt.getTime(),
-          failureCode,
-          reused: false,
-        });
-        return terminalResult("failed", step, failureCode);
-      }
+      const outcome = await executeToolCall({
+        toolCallId: call.id,
+        idempotencyKey,
+        name: call.name,
+        input: call.input,
+      });
+      if (outcome.status === "failed")
+        return terminalResult("failed", step, outcome.failureCode);
+      history.push({
+        role: "tool",
+        toolCallId: call.id,
+        name: call.name,
+        output: outcome.output,
+      });
     }
   }
 
