@@ -215,7 +215,10 @@ function PageItem({ node, ...props }: PageItemProps) {
         <FileText />
         <span>{node.title}</span>
         {props.skill && (
-          <Sparkles className="ml-auto size-3.5" aria-label="Skill" />
+          <span className="ml-auto flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+            <Sparkles className="size-2.5" />
+            AI Skill
+          </span>
         )}
       </SidebarMenuButton>
       <DropdownMenu>
