@@ -1,10 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { User } from "next-auth";
+import type { User as NextAuthUser } from "next-auth";
 import type { MenuSkill } from "@/packages/skills";
-import type { PageRow, SkillRow, SkillVersionRow } from "@/lib/client-api";
+import type { PageRow, SkillRow } from "@/lib/client-api";
 import { HttpWorkspaceApiClient } from "@/lib/client-api";
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { WorkspaceSidebar } from "@/components/workspace-sidebar";
 import {
   WorkspaceProvider,
   useWorkspaceActions,
@@ -16,14 +18,12 @@ import {
   SkillStudioSheet,
 } from "./editor/skill-studio-sheet";
 import { useProposalOrchestrator } from "./editor/use-proposal-orchestrator";
-import { useSlashMenu } from "./editor/use-slash-menu";
-import { useSelectionBubbleMenu } from "./editor/use-selection-bubble-menu";
 
 export type WritingWorkspaceProps = {
   initialPages: PageRow[];
   initialSkills: SkillRow[] | Record<string, SkillRow>;
   initialMenuSkills: MenuSkill[];
-  user: User;
+  user: NextAuthUser;
   initialActivePageId?: string;
   defaultSidebarOpen: boolean;
   initialInstructionsPageId?: string | null;
@@ -35,7 +35,9 @@ export function WritingWorkspace(props: WritingWorkspaceProps) {
 
   return (
     <WorkspaceProvider initialActivePageId={defaultPageId} initialView="write">
-      <WorkspaceShell {...props} />
+      <SidebarProvider defaultOpen={props.defaultSidebarOpen}>
+        <WorkspaceShell {...props} />
+      </SidebarProvider>
     </WorkspaceProvider>
   );
 }
@@ -44,6 +46,16 @@ function WorkspaceShell(props: WritingWorkspaceProps) {
   const apiClient = useMemo(() => new HttpWorkspaceApiClient(), []);
   const state = useWorkspaceState();
   const actions = useWorkspaceActions();
+
+  const sidebarUser = useMemo(
+    () => ({
+      id: props.user.id ?? "user-1",
+      name: props.user.name,
+      email: props.user.email,
+      image: props.user.image,
+    }),
+    [props.user]
+  );
 
   const [pages, setPages] = useState<PageRow[]>(props.initialPages);
   const [skills, setSkills] = useState<Record<string, SkillRow>>(() => {
@@ -58,14 +70,57 @@ function WorkspaceShell(props: WritingWorkspaceProps) {
   });
 
   const proposalOrchestrator = useProposalOrchestrator();
-  const slashMenu = useSlashMenu();
-  const selectionMenu = useSelectionBubbleMenu();
 
   const activePage = useMemo(
     () => pages.find((p) => p.id === state.activePageId) ?? pages[0],
     [pages, state.activePageId]
   );
   const activeSkill = activePage ? skills[activePage.id] : undefined;
+
+  async function handleAddPage(markAsSkill: boolean) {
+    const newPage = await apiClient.createPage({ markAsSkill });
+    setPages((prev) => [...prev, newPage]);
+    actions.selectPage(newPage.id);
+    if (markAsSkill) {
+      const updatedSkills = await apiClient.listSkills();
+      setSkills(updatedSkills);
+    }
+  }
+
+  async function handleDeletePage(pageId: string) {
+    const success = await apiClient.deletePage(pageId);
+    if (success) {
+      setPages((prev) => prev.filter((p) => p.id !== pageId));
+      if (state.activePageId === pageId) {
+        const remaining = pages.filter((p) => p.id !== pageId);
+        if (remaining.length > 0) {
+          actions.selectPage(remaining[0].id);
+        }
+      }
+    }
+    return success;
+  }
+
+  async function handleMovePage(
+    pageId: string,
+    action: "up" | "down" | "indent" | "outdent"
+  ) {
+    const reordered = await apiClient.movePage(pageId, action);
+    setPages(reordered);
+  }
+
+  async function handleRenamePage(pageId: string) {
+    const page = pages.find((p) => p.id === pageId);
+    if (!page) return;
+    const newTitle = window.prompt("Nhập tên trang mới:", page.title);
+    if (newTitle && newTitle !== page.title) {
+      const updated = await apiClient.updatePageMetadata(pageId, {
+        title: newTitle,
+        metadataRevision: page.metadataRevision,
+      });
+      setPages((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    }
+  }
 
   async function handleUpdateMetadata(title: string) {
     if (!activePage) return;
@@ -76,18 +131,20 @@ function WorkspaceShell(props: WritingWorkspaceProps) {
     setPages((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
   }
 
-  async function handleMarkSkill() {
-    if (!activePage) return;
-    const skill = await apiClient.markPageAsSkill(activePage.id);
-    setSkills((prev) => ({ ...prev, [activePage.id]: skill }));
+  async function handleMarkSkill(pageId?: string) {
+    const targetId = pageId ?? activePage?.id;
+    if (!targetId) return;
+    const skill = await apiClient.markPageAsSkill(targetId);
+    setSkills((prev) => ({ ...prev, [targetId]: skill }));
   }
 
-  async function handleUnmarkSkill() {
-    if (!activePage) return;
-    await apiClient.unmarkPageAsSkill(activePage.id);
+  async function handleUnmarkSkill(pageId?: string) {
+    const targetId = pageId ?? activePage?.id;
+    if (!targetId) return;
+    await apiClient.unmarkPageAsSkill(targetId);
     setSkills((prev) => {
       const next = { ...prev };
-      delete next[activePage.id];
+      delete next[targetId];
       return next;
     });
   }
@@ -107,6 +164,22 @@ function WorkspaceShell(props: WritingWorkspaceProps) {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background font-sans text-foreground">
+      {/* Left Sidebar Navigation */}
+      <WorkspaceSidebar
+        activeId={state.activePageId}
+        pages={pages}
+        user={sidebarUser}
+        skillsByPageId={skills}
+        onAddPage={handleAddPage}
+        onDeletePage={handleDeletePage}
+        onMovePage={handleMovePage}
+        onPractice={() => actions.setView("practice")}
+        onRenamePage={handleRenamePage}
+        onSelectPage={actions.selectPage}
+        onMarkSkill={(id) => handleMarkSkill(id)}
+        onUnmarkSkill={(id) => handleUnmarkSkill(id)}
+      />
+
       {/* Main Workspace Column */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Workspace Topbar */}
@@ -155,7 +228,7 @@ function WorkspaceShell(props: WritingWorkspaceProps) {
           versions={[]}
           onUpdateSkill={handleUpdateSkill}
           onPublishVersion={handlePublishVersion}
-          onUnmarkSkill={handleUnmarkSkill}
+          onUnmarkSkill={() => handleUnmarkSkill()}
         />
       )}
     </div>
