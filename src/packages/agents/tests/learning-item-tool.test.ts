@@ -38,11 +38,16 @@ describe("create LearningItem recommendation Agent Tool", () => {
     const tools = createInitialToolRegistry({
       createLearningItemRecommendation,
     });
+    const transaction = {} as never;
 
     await expect(
-      tools.execute(CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL, input, context, [
+      tools.execute(
         CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL,
-      ])
+        input,
+        context,
+        [CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL],
+        { transaction }
+      )
     ).resolves.toMatchObject({
       output: {
         recommendationId: "44444444-4444-4444-8444-444444444444",
@@ -57,16 +62,19 @@ describe("create LearningItem recommendation Agent Tool", () => {
       },
       snapshot: { risk: "medium", approval: "required" },
     });
-    expect(createLearningItemRecommendation).toHaveBeenCalledWith({
-      userId: context.userId,
-      pageId: context.currentPageId,
-      sourceRunId: context.provenance.sourceRunId,
-      agentRunId: context.provenance.agentRunId,
-      providerToolCallId: context.provenance.providerToolCallId,
-      toolCallIdempotencyKey: context.provenance.idempotencyKey,
-      idempotencyScopeId: context.provenance.idempotencyScopeId,
-      ...input,
-    });
+    expect(createLearningItemRecommendation).toHaveBeenCalledWith(
+      {
+        userId: context.userId,
+        pageId: context.currentPageId,
+        sourceRunId: context.provenance.sourceRunId,
+        agentRunId: context.provenance.agentRunId,
+        providerToolCallId: context.provenance.providerToolCallId,
+        toolCallIdempotencyKey: context.provenance.idempotencyKey,
+        idempotencyScopeId: context.provenance.idempotencyScopeId,
+        ...input,
+      },
+      transaction
+    );
   });
 
   it("rejects invalid or unauditable recommendations before persistence", async () => {

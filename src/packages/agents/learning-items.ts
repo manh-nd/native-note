@@ -5,6 +5,7 @@ import {
   agentLearningItemRecommendations,
   agentRuns,
   learningItems,
+  toolCallExecutions,
   toolCalls,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api";
@@ -12,6 +13,7 @@ import {
   learningItemRecommendationDraftSchema,
   type AgentLearningItemRecommendationDraft,
 } from "./learning-item-contract";
+import type { DurableToolCallInvocation } from "./tool-execution";
 
 export type CreateAgentLearningItemRecommendationInput =
   AgentLearningItemRecommendationDraft & {
@@ -24,8 +26,45 @@ export type CreateAgentLearningItemRecommendationInput =
     idempotencyScopeId: string;
   };
 
+export async function linkAgentLearningItemRecommendationToolCall(
+  transaction: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  invocation: DurableToolCallInvocation
+) {
+  if (
+    invocation.reused ||
+    invocation.name !== "create_learning_item_recommendation" ||
+    invocation.failureCode !== null ||
+    typeof invocation.output !== "object" ||
+    invocation.output === null ||
+    typeof (invocation.output as { recommendationId?: unknown })
+      .recommendationId !== "string"
+  )
+    return;
+  const [audited] = await transaction
+    .update(agentLearningItemRecommendations)
+    .set({ auditedAt: invocation.completedAt })
+    .where(
+      and(
+        eq(
+          agentLearningItemRecommendations.id,
+          (invocation.output as { recommendationId: string }).recommendationId
+        ),
+        eq(agentLearningItemRecommendations.agentRunId, invocation.agentRunId),
+        eq(
+          agentLearningItemRecommendations.providerToolCallId,
+          invocation.providerCallId
+        ),
+        eq(agentLearningItemRecommendations.status, "pending")
+      )
+    )
+    .returning({ id: agentLearningItemRecommendations.id });
+  if (!audited)
+    throw new Error("LearningItem recommendation audit could not be linked.");
+}
+
 export async function createAgentLearningItemRecommendation(
-  rawInput: CreateAgentLearningItemRecommendationInput
+  rawInput: CreateAgentLearningItemRecommendationInput,
+  transaction?: Parameters<Parameters<typeof db.transaction>[0]>[0]
 ): Promise<{ recommendationId: string; status: "pending" }> {
   const input = z
     .object({
@@ -40,41 +79,43 @@ export async function createAgentLearningItemRecommendation(
     })
     .strict()
     .parse(rawInput);
-  const [existing] = await db
-    .select({
-      id: agentLearningItemRecommendations.id,
-      userId: agentLearningItemRecommendations.userId,
-      pageId: agentLearningItemRecommendations.pageId,
-      status: agentLearningItemRecommendations.status,
-    })
-    .from(agentLearningItemRecommendations)
-    .where(
-      and(
-        eq(
-          agentLearningItemRecommendations.idempotencyScopeId,
-          input.idempotencyScopeId
-        ),
-        eq(
-          agentLearningItemRecommendations.toolCallIdempotencyKey,
-          input.toolCallIdempotencyKey
+  const create = async (
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0]
+  ) => {
+    const [existing] = await tx
+      .select({
+        id: agentLearningItemRecommendations.id,
+        userId: agentLearningItemRecommendations.userId,
+        pageId: agentLearningItemRecommendations.pageId,
+        status: agentLearningItemRecommendations.status,
+      })
+      .from(agentLearningItemRecommendations)
+      .where(
+        and(
+          eq(
+            agentLearningItemRecommendations.idempotencyScopeId,
+            input.idempotencyScopeId
+          ),
+          eq(
+            agentLearningItemRecommendations.toolCallIdempotencyKey,
+            input.toolCallIdempotencyKey
+          )
         )
       )
-    )
-    .limit(1);
-  if (existing) {
-    if (existing.userId !== input.userId || existing.pageId !== input.pageId)
-      throw new ApiError(
-        403,
-        "Không thể truy cập đề xuất LearningItem này.",
-        "LEARNING_RECOMMENDATION_FORBIDDEN"
-      );
-    return {
-      recommendationId: existing.id,
-      status: "pending",
-    };
-  }
+      .limit(1);
+    if (existing) {
+      if (existing.userId !== input.userId || existing.pageId !== input.pageId)
+        throw new ApiError(
+          403,
+          "Không thể truy cập đề xuất LearningItem này.",
+          "LEARNING_RECOMMENDATION_FORBIDDEN"
+        );
+      return {
+        recommendationId: existing.id,
+        status: "pending" as const,
+      };
+    }
 
-  return db.transaction(async (tx) => {
     const [ownedRun] = await tx
       .select({ id: agentRuns.id })
       .from(agentRuns)
@@ -137,11 +178,40 @@ export async function createAgentLearningItemRecommendation(
         "LEARNING_RECOMMENDATION_IDEMPOTENCY_CONFLICT"
       );
     return { recommendationId: winner.id, status: "pending" as const };
-  });
+  };
+  return transaction ? create(transaction) : db.transaction(create);
 }
 
 const storedRecommendationSchema =
   learningItemRecommendationDraftSchema.loose();
+
+async function updateToolCallApproval(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  recommendation: Pick<
+    typeof agentLearningItemRecommendations.$inferSelect,
+    "agentRunId" | "providerToolCallId" | "toolCallIdempotencyKey"
+  >,
+  executionId: string | null,
+  approvalState: "approved" | "denied"
+) {
+  await tx
+    .update(toolCalls)
+    .set({ approvalState })
+    .where(
+      executionId
+        ? eq(toolCalls.executionId, executionId)
+        : and(
+            eq(toolCalls.agentRunId, recommendation.agentRunId),
+            eq(toolCalls.providerCallId, recommendation.providerToolCallId),
+            eq(toolCalls.idempotencyKey, recommendation.toolCallIdempotencyKey)
+          )
+    );
+  if (!executionId) return;
+  await tx
+    .update(toolCallExecutions)
+    .set({ approvalState })
+    .where(eq(toolCallExecutions.id, executionId));
+}
 
 export async function decideAgentLearningItemRecommendation({
   userId,
@@ -157,6 +227,7 @@ export async function decideAgentLearningItemRecommendation({
       .select({
         recommendation: agentLearningItemRecommendations,
         learningItemId: learningItems.id,
+        toolCallExecutionId: toolCalls.executionId,
       })
       .from(agentLearningItemRecommendations)
       .leftJoin(
@@ -164,6 +235,20 @@ export async function decideAgentLearningItemRecommendation({
         eq(
           learningItems.agentRecommendationId,
           agentLearningItemRecommendations.id
+        )
+      )
+      .leftJoin(
+        toolCalls,
+        and(
+          eq(toolCalls.agentRunId, agentLearningItemRecommendations.agentRunId),
+          eq(
+            toolCalls.providerCallId,
+            agentLearningItemRecommendations.providerToolCallId
+          ),
+          eq(
+            toolCalls.idempotencyKey,
+            agentLearningItemRecommendations.toolCallIdempotencyKey
+          )
         )
       )
       .where(
@@ -197,15 +282,12 @@ export async function decideAgentLearningItemRecommendation({
         .update(agentLearningItemRecommendations)
         .set({ status: "rejected", decidedAt })
         .where(eq(agentLearningItemRecommendations.id, recommendation.id));
-      await tx
-        .update(toolCalls)
-        .set({ approvalState: "denied" })
-        .where(
-          and(
-            eq(toolCalls.agentRunId, recommendation.agentRunId),
-            eq(toolCalls.providerCallId, recommendation.providerToolCallId)
-          )
-        );
+      await updateToolCallApproval(
+        tx,
+        recommendation,
+        owned.toolCallExecutionId,
+        "denied"
+      );
       return {
         recommendationId: recommendation.id,
         status: "rejected" as const,
@@ -250,15 +332,12 @@ export async function decideAgentLearningItemRecommendation({
       .update(agentLearningItemRecommendations)
       .set({ status: "approved", decidedAt })
       .where(eq(agentLearningItemRecommendations.id, recommendation.id));
-    await tx
-      .update(toolCalls)
-      .set({ approvalState: "approved" })
-      .where(
-        and(
-          eq(toolCalls.agentRunId, recommendation.agentRunId),
-          eq(toolCalls.providerCallId, recommendation.providerToolCallId)
-        )
-      );
+    await updateToolCallApproval(
+      tx,
+      recommendation,
+      owned.toolCallExecutionId,
+      "approved"
+    );
     return {
       recommendationId: recommendation.id,
       status: "approved" as const,

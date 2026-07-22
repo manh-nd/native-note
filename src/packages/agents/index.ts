@@ -9,8 +9,9 @@ export {
   type AgentModelRequest,
   type AgentRunResult,
   type AgentToolRequest,
-  type CompletedToolCall,
-  type ToolCallAudit,
+  type ExecuteToolCall,
+  type ToolCallOutcome,
+  type ToolCallRequest,
 } from "./lib/agent-runtime";
 export {
   ToolExecutionError,

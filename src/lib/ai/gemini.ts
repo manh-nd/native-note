@@ -4,6 +4,7 @@ import {
   type Content,
   type FunctionDeclaration,
 } from "@google/genai";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ApiError } from "../api";
 import {
@@ -378,7 +379,7 @@ export async function generateAgentStep(
           },
         });
       const calls = (response.functionCalls ?? []).map((call, index) => ({
-        id: call.id ?? `call-${attempt}-${index}`,
+        id: call.id ?? `call-${randomUUID()}-${index}`,
         name: call.name ?? "",
         input: call.args ?? {},
       }));

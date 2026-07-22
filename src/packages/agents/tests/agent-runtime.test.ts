@@ -1,6 +1,48 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { AgentModelError, createToolRegistry, runAgent } from "../index";
+import {
+  AgentModelError,
+  ToolExecutionError,
+  createToolRegistry,
+  runAgent,
+  type ToolRegistry,
+} from "../index";
+
+function executeThrough(registry: ToolRegistry) {
+  const completed = new Map<string, unknown>();
+  return vi.fn(
+    async (request: {
+      toolCallId: string;
+      idempotencyKey: string;
+      name: string;
+      input: unknown;
+    }) => {
+      if (completed.has(request.idempotencyKey))
+        return {
+          status: "reused" as const,
+          output: completed.get(request.idempotencyKey),
+        };
+      try {
+        const result = await registry.execute(
+          request.name,
+          request.input,
+          { userId: "user-1", currentPageId: "page-1" },
+          [request.name]
+        );
+        completed.set(request.idempotencyKey, result.output);
+        return { status: "completed" as const, output: result.output };
+      } catch (error) {
+        return {
+          status: "failed" as const,
+          failureCode:
+            error instanceof ToolExecutionError
+              ? error.code
+              : "TOOL_EXECUTION_FAILED",
+        };
+      }
+    }
+  );
+}
 
 function createReadCurrentPageTools(
   execute = async () => ({ pageId: "page-1", text: "Draft" })
@@ -14,6 +56,7 @@ function createReadCurrentPageTools(
       ownership: "current_user",
       risk: "low",
       approval: "not_required",
+      execution: "read_only",
       authorize: async () => true,
       execute,
     },
@@ -39,7 +82,7 @@ const definition = {
 };
 
 describe("Agent runtime", () => {
-  it("executes allowed Tools sequentially and returns a completed terminal status", async () => {
+  it("consumes durable ToolCall outcomes and returns a completed terminal status", async () => {
     const model = vi
       .fn()
       .mockResolvedValueOnce({
@@ -47,31 +90,30 @@ describe("Agent runtime", () => {
         calls: [{ id: "call-1", name: "read_current_page", input: {} }],
       })
       .mockResolvedValueOnce({ text: "Your draft is clear.", calls: [] });
-    const audit = vi.fn(async () => undefined);
+    const executeToolCall = vi.fn(async () => ({
+      status: "completed" as const,
+      output: { pageId: "page-1", text: "Draft" },
+    }));
 
     await expect(
       runAgent({
         definition,
         prompt: "Review the current Page.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools,
         model,
-        audit,
+        executeToolCall,
       })
     ).resolves.toMatchObject({
       status: "completed",
       output: "Your draft is clear.",
       steps: 2,
     });
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "read_current_page",
-        input: {},
-        output: { pageId: "page-1", text: "Draft" },
-        approvalState: "not_required",
-        risk: "low",
-      })
-    );
+    expect(executeToolCall).toHaveBeenCalledWith({
+      toolCallId: "call-1",
+      idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+      name: "read_current_page",
+      input: {},
+    });
     expect(model).toHaveBeenLastCalledWith(
       expect.objectContaining({
         agentSnapshot: expect.objectContaining({
@@ -92,7 +134,7 @@ describe("Agent runtime", () => {
     );
   });
 
-  it("audits a Tool-created approval request as pending", async () => {
+  it("appends a completed approval-producing ToolCall outcome to history", async () => {
     const approvalTools = createToolRegistry([
       {
         name: "create_learning_item_recommendation",
@@ -105,6 +147,7 @@ describe("Agent runtime", () => {
         ownership: "current_user",
         risk: "medium",
         approval: "required_pending_result",
+        execution: "read_only",
         authorize: async () => true,
         execute: async () => ({
           recommendationId: "recommendation-1",
@@ -112,7 +155,7 @@ describe("Agent runtime", () => {
         }),
       },
     ]);
-    const audit = vi.fn(async () => undefined);
+    const executeToolCall = executeThrough(approvalTools);
     const approvalDefinition = {
       ...definition,
       allowedTools: ["create_learning_item_recommendation"],
@@ -122,7 +165,6 @@ describe("Agent runtime", () => {
       runAgent({
         definition: approvalDefinition,
         prompt: "Recommend a lesson.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools: approvalTools,
         model: vi
           .fn()
@@ -137,16 +179,10 @@ describe("Agent runtime", () => {
             ],
           })
           .mockResolvedValueOnce({ text: "Recommendation ready.", calls: [] }),
-        audit,
+        executeToolCall,
       })
     ).resolves.toMatchObject({ status: "completed" });
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "create_learning_item_recommendation",
-        approvalState: "pending",
-        risk: "medium",
-      })
-    );
+    expect(executeToolCall).toHaveBeenCalledOnce();
   });
 
   it("stops at the configured maximum and never exceeds the platform limit of six", async () => {
@@ -161,40 +197,36 @@ describe("Agent runtime", () => {
       runAgent({
         definition: { ...definition, maxSteps: 99 },
         prompt: "Loop forever.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools,
         model,
-        audit: async () => undefined,
+        executeToolCall: executeThrough(tools),
       })
     ).resolves.toMatchObject({ status: "step_limit", steps: 6, output: null });
     expect(model).toHaveBeenCalledTimes(6);
   });
 
-  it("audits invalid Tool calls and ends with a failed terminal status", async () => {
-    const audit = vi.fn(async () => undefined);
+  it("ends with the safe failure code from a failed durable ToolCall", async () => {
+    const executeToolCall = vi.fn(async () => ({
+      status: "failed" as const,
+      failureCode: "TOOL_NOT_ALLOWED",
+    }));
 
     await expect(
       runAgent({
         definition,
         prompt: "Edit the Page.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools,
         model: async () => ({
           text: null,
           calls: [{ id: "call-2", name: "create_proposal", input: {} }],
         }),
-        audit,
+        executeToolCall,
       })
     ).resolves.toMatchObject({
       status: "failed",
       errorCode: "TOOL_NOT_ALLOWED",
     });
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "create_proposal",
-        failureCode: "TOOL_NOT_ALLOWED",
-      })
-    );
+    expect(executeToolCall).toHaveBeenCalledOnce();
   });
 
   it("cancels during model work and does not execute a later Tool call", async () => {
@@ -205,7 +237,6 @@ describe("Agent runtime", () => {
     const result = await runAgent({
       definition,
       prompt: "Review the current Page.",
-      context: { userId: "user-1", currentPageId: "page-1" },
       tools: cancellableTools,
       signal: controller.signal,
       model: async ({ signal }) => {
@@ -218,7 +249,7 @@ describe("Agent runtime", () => {
           ],
         };
       },
-      audit: async () => undefined,
+      executeToolCall: executeThrough(cancellableTools),
     });
 
     expect(result).toMatchObject({
@@ -241,7 +272,6 @@ describe("Agent runtime", () => {
       runAgent({
         definition,
         prompt: "Review the current Page.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools: cancellableTools,
         signal: controller.signal,
         model: async () => ({
@@ -251,7 +281,7 @@ describe("Agent runtime", () => {
             { id: "call-2", name: "read_current_page", input: {} },
           ],
         }),
-        audit: async () => undefined,
+        executeToolCall: executeThrough(cancellableTools),
       })
     ).resolves.toMatchObject({ status: "cancelled", steps: 1 });
     expect(execute).toHaveBeenCalledTimes(1);
@@ -268,13 +298,12 @@ describe("Agent runtime", () => {
       runAgent({
         definition,
         prompt: "Review the current Page.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools: createReadCurrentPageTools(execute),
         model: async () => ({
           text: null,
           calls: [{ id: "call-1", name: "read_current_page", input: {} }],
         }),
-        audit: async () => undefined,
+        executeToolCall: executeThrough(createReadCurrentPageTools(execute)),
         isCancellationRequested,
       })
     ).resolves.toMatchObject({ status: "cancelled", steps: 1 });
@@ -293,10 +322,9 @@ describe("Agent runtime", () => {
       runAgent({
         definition,
         prompt: "Review the current Page.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools,
         model: transientModel,
-        audit: async () => undefined,
+        executeToolCall: executeThrough(tools),
       })
     ).resolves.toMatchObject({
       status: "completed",
@@ -312,10 +340,9 @@ describe("Agent runtime", () => {
       runAgent({
         definition,
         prompt: "Review the current Page.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools,
         model: permanentModel,
-        audit: async () => undefined,
+        executeToolCall: executeThrough(tools),
       })
     ).resolves.toMatchObject({
       status: "failed",
@@ -343,18 +370,15 @@ describe("Agent runtime", () => {
       runAgent({
         definition,
         prompt: "Review the current Page.",
-        context: { userId: "user-1", currentPageId: "page-1" },
         tools: idempotentTools,
         model,
-        audit: async () => undefined,
+        executeToolCall: executeThrough(idempotentTools),
       })
     ).resolves.toMatchObject({ status: "completed" });
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it("reuses a completed Tool call when retrying a persisted run", async () => {
-    const execute = vi.fn(async () => ({ pageId: "page-1", text: "Changed" }));
-    const retryTools = createReadCurrentPageTools(execute);
+  it("appends a reused durable ToolCall output to model history", async () => {
     const model = vi
       .fn()
       .mockResolvedValueOnce({
@@ -365,36 +389,21 @@ describe("Agent runtime", () => {
       })
       .mockResolvedValueOnce({ text: "Used the original result.", calls: [] });
 
-    const findCompletedToolCallByIdempotencyKey = vi.fn(async () => ({
-      name: "read_current_page",
-      input: {},
+    const executeToolCall = vi.fn(async () => ({
+      status: "reused" as const,
       output: { pageId: "page-1", text: "Original" },
-      risk: "low" as const,
-      approvalState: "not_required" as const,
     }));
-    const audit = vi.fn(async () => undefined);
 
     await expect(
       runAgent({
         definition,
         prompt: "Retry the run.",
-        context: { userId: "user-1", currentPageId: "page-1" },
-        tools: retryTools,
+        tools,
         model,
-        audit,
-        findCompletedToolCallByIdempotencyKey,
+        executeToolCall,
       })
     ).resolves.toMatchObject({ status: "completed" });
-    expect(execute).not.toHaveBeenCalled();
-    expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        toolCallId: "new-provider-call",
-        reused: true,
-      })
-    );
-    expect(findCompletedToolCallByIdempotencyKey).toHaveBeenCalledWith(
-      expect.stringMatching(/^[a-f0-9]{64}$/)
-    );
+    expect(executeToolCall).toHaveBeenCalledOnce();
     expect(model).toHaveBeenLastCalledWith(
       expect.objectContaining({
         history: expect.arrayContaining([

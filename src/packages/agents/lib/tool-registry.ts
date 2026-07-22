@@ -1,4 +1,9 @@
 import { z } from "zod";
+import type { db } from "@/db";
+
+export type ToolDatabaseTransaction = Parameters<
+  Parameters<typeof db.transaction>[0]
+>[0];
 
 export type ToolOwnership = "current_user";
 export type ToolRisk = "low" | "medium" | "high";
@@ -27,6 +32,7 @@ export type ToolDefinition = {
   ownership: ToolOwnership;
   risk: ToolRisk;
   approval: ToolApproval;
+  execution: "read_only" | "database_transaction";
   audit?:
     | { mode: "full" }
     | {
@@ -34,13 +40,21 @@ export type ToolDefinition = {
         input: (input: unknown) => unknown;
         output: (output: unknown) => unknown;
       };
-  authorize: (context: ToolContext, input: unknown) => Promise<boolean>;
-  execute: (context: ToolContext, input: unknown) => Promise<unknown>;
+  authorize: (
+    context: ToolContext,
+    input: unknown,
+    transaction?: ToolDatabaseTransaction
+  ) => Promise<boolean>;
+  execute: (
+    context: ToolContext,
+    input: unknown,
+    transaction?: ToolDatabaseTransaction
+  ) => Promise<unknown>;
 };
 
 export type ToolSnapshot = Pick<
   ToolDefinition,
-  "name" | "description" | "ownership" | "risk"
+  "name" | "description" | "ownership" | "risk" | "execution"
 > & {
   approval: "not_required" | "required";
   inputSchema: unknown;
@@ -56,8 +70,11 @@ export class ToolExecutionError extends Error {
       | "TOOL_OWNERSHIP_DENIED"
       | "TOOL_APPROVAL_REQUIRED"
       | "TOOL_EXECUTION_FAILED"
-      | "TOOL_OUTPUT_INVALID",
-    message: string
+      | "TOOL_OUTPUT_INVALID"
+      | "TOOL_PERSISTENCE_FAILED"
+      | "TOOL_IDEMPOTENCY_CONFLICT",
+    message: string,
+    public readonly auditInput?: unknown
   ) {
     super(message);
     this.name = "ToolExecutionError";
@@ -98,12 +115,22 @@ function snapshot(definition: ToolDefinition): ToolSnapshot {
     description: definition.description,
     ownership: definition.ownership,
     risk: definition.risk,
+    execution: definition.execution,
     approval:
       definition.approval === "not_required" ? "not_required" : "required",
     inputSchema: z.toJSONSchema(definition.inputSchema),
     outputSchema: z.toJSONSchema(definition.outputSchema),
     auditMode: definition.audit?.mode ?? "full",
   };
+}
+
+function isPersistenceFailure(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return (
+    typeof code === "string" &&
+    (/^[0-9A-Z]{5}$/.test(code) || /^(?:ECONN|ETIMEDOUT)/.test(code))
+  );
 }
 
 export function createToolRegistry(definitions: ToolDefinition[]) {
@@ -124,6 +151,12 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
       throw new Error(`Tool ${definition.name} has invalid ownership.`);
     if (!(["low", "medium", "high"] as const).includes(definition.risk))
       throw new Error(`Tool ${definition.name} has invalid risk.`);
+    if (
+      !(["read_only", "database_transaction"] as const).includes(
+        definition.execution
+      )
+    )
+      throw new Error(`Tool ${definition.name} has invalid execution mode.`);
     if (
       !(
         [
@@ -162,7 +195,8 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
       name: string,
       rawInput: unknown,
       context: ToolContext,
-      allowedTools: string[]
+      allowedTools: string[],
+      { transaction }: { transaction?: ToolDatabaseTransaction } = {}
     ) {
       const definition = byName.get(name);
       if (!definition || !allowedTools.includes(name))
@@ -176,7 +210,7 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
           "TOOL_INPUT_INVALID",
           `Tool ${name} received invalid input.`
         );
-      if (!(await definition.authorize(context, parsedInput.data)))
+      if (!(await definition.authorize(context, parsedInput.data, transaction)))
         throw new ToolExecutionError(
           "TOOL_OWNERSHIP_DENIED",
           `Tool ${name} cannot access this resource.`
@@ -186,32 +220,47 @@ export function createToolRegistry(definitions: ToolDefinition[]) {
           "TOOL_APPROVAL_REQUIRED",
           `Tool ${name} requires approval.`
         );
+      if (definition.execution === "database_transaction" && !transaction)
+        throw new ToolExecutionError(
+          "TOOL_PERSISTENCE_FAILED",
+          `Tool ${name} requires a database transaction.`
+        );
+      const auditInput = redactToolAuditValue(
+        definition.audit?.mode === "redacted"
+          ? definition.audit.input(parsedInput.data)
+          : parsedInput.data
+      );
       let rawOutput: unknown;
       try {
-        rawOutput = await definition.execute(context, parsedInput.data);
-      } catch {
+        rawOutput = await definition.execute(
+          context,
+          parsedInput.data,
+          transaction
+        );
+      } catch (error) {
         throw new ToolExecutionError(
-          "TOOL_EXECUTION_FAILED",
-          `Tool ${name} failed.`
+          definition.execution === "database_transaction" &&
+            isPersistenceFailure(error)
+            ? "TOOL_PERSISTENCE_FAILED"
+            : "TOOL_EXECUTION_FAILED",
+          `Tool ${name} failed.`,
+          auditInput
         );
       }
       const output = definition.outputSchema.safeParse(rawOutput);
       if (!output.success)
         throw new ToolExecutionError(
           "TOOL_OUTPUT_INVALID",
-          `Tool ${name} returned invalid output.`
+          `Tool ${name} returned invalid output.`,
+          auditInput
         );
-      const auditInput =
-        definition.audit?.mode === "redacted"
-          ? definition.audit.input(parsedInput.data)
-          : parsedInput.data;
       const auditOutput =
         definition.audit?.mode === "redacted"
           ? definition.audit.output(output.data)
           : output.data;
       return {
         output: output.data,
-        auditInput: redactToolAuditValue(auditInput),
+        auditInput,
         auditOutput: redactToolAuditValue(auditOutput),
         snapshot: snapshot(definition),
       };

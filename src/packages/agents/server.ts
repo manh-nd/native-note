@@ -1,9 +1,8 @@
 import type { Content, FunctionDeclaration, Part } from "@google/genai";
-import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import {
   aiRuns,
-  agentLearningItemRecommendations,
   agentRuns,
   agents,
   pages,
@@ -18,15 +17,19 @@ import {
   AGENT_MAX_STEPS,
   AgentModelError,
   AGENT_TOOLS,
-  CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL,
   createInitialToolRegistry,
   runAgent,
   type AgentHistoryItem,
   type AgentModel,
   type AgentRunResult,
-  type CompletedToolCall,
   type ToolRegistry,
 } from "./index";
+import {
+  createDatabaseToolCallStore,
+  createDurableToolCallExecutor,
+  type DurableToolCallStore,
+} from "./tool-execution";
+import { linkAgentLearningItemRecommendationToolCall } from "./learning-items";
 
 const activeAgentRuns = new Map<string, AbortController>();
 
@@ -246,7 +249,7 @@ export async function runAgentDefinition({
   retryRootRunId,
   trigger = "manual",
   scheduleDeliveryId,
-  completedToolCalls = new Map(),
+  toolCallStore,
   isCancellationRequested = persistedCancellationRequested,
 }: {
   userId: string;
@@ -259,7 +262,7 @@ export async function runAgentDefinition({
   retryRootRunId?: string;
   trigger?: "manual" | "scheduled";
   scheduleDeliveryId?: string;
-  completedToolCalls?: Map<string, CompletedToolCall>;
+  toolCallStore?: DurableToolCallStore;
   isCancellationRequested?: (runId: string) => Promise<boolean>;
 }) {
   if (scheduleDeliveryId) {
@@ -438,20 +441,28 @@ export async function runAgentDefinition({
   const controller = new AbortController();
   activeAgentRuns.set(run.id, controller);
   try {
-    result = await runAgent({
-      definition,
-      prompt,
+    const executeToolCall = createDurableToolCallExecutor({
+      registry,
+      store:
+        toolCallStore ??
+        createDatabaseToolCallStore({
+          linkInvocation: linkAgentLearningItemRecommendationToolCall,
+        }),
       context: { userId, currentPageId: pageId },
+      allowedTools: definition.allowedTools,
       provenance: {
         sourceRunId: sourceRun.id,
         agentRunId: run.id,
         idempotencyScopeId: retryRootRunId ?? run.id,
       },
+    });
+    result = await runAgent({
+      definition,
+      prompt,
       tools: registry,
       model,
+      executeToolCall,
       signal: controller.signal,
-      findCompletedToolCallByIdempotencyKey: async (idempotencyKey) =>
-        completedToolCalls.get(idempotencyKey),
       isCancellationRequested: () => isCancellationRequested(run.id),
       onProgress: async ({ steps, modelAttempts }) => {
         await db
@@ -460,57 +471,6 @@ export async function runAgentDefinition({
           .where(
             and(eq(agentRuns.id, run.id), eq(agentRuns.status, "running"))
           );
-      },
-      audit: async (audit) => {
-        await db.transaction(async (tx) => {
-          await tx.insert(toolCalls).values({
-            agentRunId: run.id,
-            providerCallId: audit.toolCallId,
-            idempotencyKey: audit.idempotencyKey,
-            name: audit.name,
-            input: audit.input,
-            output: audit.output,
-            risk: audit.risk,
-            approvalState: audit.approvalState,
-            failureCode: audit.failureCode,
-            startedAt: audit.startedAt,
-            completedAt: audit.completedAt,
-            durationMs: audit.durationMs,
-            reused: audit.reused,
-          });
-          if (
-            audit.name === CREATE_LEARNING_ITEM_RECOMMENDATION_TOOL &&
-            audit.failureCode === null &&
-            typeof audit.output === "object" &&
-            audit.output !== null &&
-            typeof (audit.output as { recommendationId?: unknown })
-              .recommendationId === "string"
-          ) {
-            const [audited] = await tx
-              .update(agentLearningItemRecommendations)
-              .set({ auditedAt: audit.completedAt })
-              .where(
-                and(
-                  eq(
-                    agentLearningItemRecommendations.id,
-                    (audit.output as { recommendationId: string })
-                      .recommendationId
-                  ),
-                  eq(agentLearningItemRecommendations.agentRunId, run.id),
-                  eq(
-                    agentLearningItemRecommendations.providerToolCallId,
-                    audit.toolCallId
-                  ),
-                  eq(agentLearningItemRecommendations.status, "pending")
-                )
-              )
-              .returning({ id: agentLearningItemRecommendations.id });
-            if (!audited)
-              throw new Error(
-                "LearningItem recommendation audit could not be linked."
-              );
-          }
-        });
       },
     });
   } catch (error) {
@@ -682,50 +642,6 @@ export async function retryAgentRun({
     );
 
   const retryRootRunId = previous.retryRootRunId ?? previous.id;
-  const lineageRuns = await db
-    .select({ id: agentRuns.id })
-    .from(agentRuns)
-    .where(
-      and(
-        eq(agentRuns.agentId, agentId),
-        eq(agentRuns.creatorId, userId),
-        or(
-          eq(agentRuns.id, retryRootRunId),
-          eq(agentRuns.retryRootRunId, retryRootRunId)
-        )
-      )
-    );
-  const completedCalls = await db
-    .select({
-      idempotencyKey: toolCalls.idempotencyKey,
-      name: toolCalls.name,
-      input: toolCalls.input,
-      output: toolCalls.output,
-      risk: toolCalls.risk,
-      approvalState: toolCalls.approvalState,
-      failureCode: toolCalls.failureCode,
-    })
-    .from(toolCalls)
-    .where(
-      inArray(
-        toolCalls.agentRunId,
-        lineageRuns.map((run) => run.id)
-      )
-    );
-  const completedToolCalls = new Map(
-    completedCalls
-      .filter((call) => call.failureCode === null)
-      .map((call) => [
-        call.idempotencyKey,
-        {
-          name: call.name,
-          input: call.input,
-          output: call.output,
-          risk: call.risk,
-          approvalState: call.approvalState,
-        },
-      ])
-  );
   try {
     return await runAgentDefinition({
       userId,
@@ -737,7 +653,6 @@ export async function retryAgentRun({
       retryOfRunId: previous.id,
       retryRootRunId,
       trigger: previous.trigger,
-      completedToolCalls,
     });
   } catch (error) {
     if (

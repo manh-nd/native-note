@@ -8,6 +8,7 @@ const database = vi.hoisted(() => {
     insertValues: [] as unknown[],
     updates: [] as unknown[][],
     updateValues: [] as unknown[],
+    executions: [] as unknown[],
   };
   const select = () => {
     const rows = state.selects.shift() ?? [];
@@ -17,6 +18,7 @@ const database = vi.hoisted(() => {
       leftJoin: () => query,
       where: () => query,
       orderBy: () => query,
+      for: () => query,
       limit: () => Promise.resolve(rows),
       then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
     };
@@ -30,6 +32,8 @@ const database = vi.hoisted(() => {
         state.insertValues.push(value);
         return query;
       },
+      onConflictDoNothing: () => query,
+      onConflictDoUpdate: () => query,
       returning: () =>
         error === undefined ? Promise.resolve(rows) : Promise.reject(error),
     };
@@ -47,13 +51,17 @@ const database = vi.hoisted(() => {
     };
     return query;
   };
-  const connection = { select, insert, update };
+  const execute = async (statement: unknown) => {
+    state.executions.push(statement);
+  };
+  const transaction = async <T>(run: (tx: never) => Promise<T>) =>
+    run(connection as never);
+  const connection = { select, insert, update, execute, transaction };
   return {
     state,
     db: {
       ...connection,
-      transaction: async <T>(run: (tx: typeof connection) => Promise<T>) =>
-        run(connection),
+      transaction,
     },
   };
 });
@@ -89,6 +97,7 @@ describe("Agent definitions", () => {
     database.state.insertValues = [];
     database.state.updates = [];
     database.state.updateValues = [];
+    database.state.executions = [];
   });
 
   it("persists owned Instructions, published Skills, allowed Tools, model policy, and bounded steps", async () => {
@@ -182,15 +191,20 @@ describe("Agent definitions", () => {
           version: 3,
           instructionSnapshot: "Be concise.",
         },
-      ]
+      ],
+      [],
+      [],
+      []
     );
     database.state.inserts.push(
       [{ id: "source-run-1" }],
       [{ id: "run-1" }],
+      [{ id: "execution-1" }],
       []
     );
     database.state.updates.push(
       [],
+      [{ id: "execution-1" }],
       [],
       [],
       [{ id: "run-1", status: "completed", output: "Looks good." }]
@@ -204,6 +218,7 @@ describe("Agent definitions", () => {
         ownership: "current_user",
         risk: "low",
         approval: "not_required",
+        execution: "read_only",
         authorize: async () => true,
         execute: async () => ({ text: "Draft" }),
       },
@@ -260,6 +275,13 @@ describe("Agent definitions", () => {
       toolSnapshots: [expect.objectContaining({ name: "read_current_page" })],
     });
     expect(database.state.insertValues[2]).toMatchObject({
+      idempotencyScopeId: "run-1",
+      claimedByAgentRunId: "run-1",
+      claimedByProviderCallId: "provider-call-1",
+      status: "executing",
+    });
+    expect(database.state.insertValues[3]).toMatchObject({
+      executionId: "execution-1",
       agentRunId: "run-1",
       providerCallId: "provider-call-1",
       idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -268,6 +290,7 @@ describe("Agent definitions", () => {
       failureCode: null,
       reused: false,
     });
+    expect(database.state.executions).toHaveLength(1);
     expect(database.state.updateValues).toContainEqual(
       expect.objectContaining({
         status: "completed",
@@ -330,15 +353,20 @@ describe("Agent definitions", () => {
           instructionsSnapshot: "Recommend useful lessons.",
         },
       ],
-      [{ id: "page-1", contentRevision: 2 }]
+      [{ id: "page-1", contentRevision: 2 }],
+      [],
+      [],
+      []
     );
     database.state.inserts.push(
       [{ id: "source-run-1" }],
       [{ id: "run-1" }],
+      [{ id: "execution-1" }],
       []
     );
     database.state.updates.push(
       [],
+      [{ id: "execution-1" }],
       [{ id: "recommendation-1" }],
       [],
       [],
@@ -356,6 +384,7 @@ describe("Agent definitions", () => {
         ownership: "current_user",
         risk: "medium",
         approval: "required_pending_result",
+        execution: "database_transaction",
         authorize: async () => true,
         execute: async () => ({
           recommendationId: "recommendation-1",
@@ -532,8 +561,6 @@ describe("Agent definitions", () => {
           status: "failed",
         },
       ],
-      [{ id: "run-1" }],
-      [],
       [
         {
           agent,

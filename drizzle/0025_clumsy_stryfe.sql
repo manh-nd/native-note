@@ -1,0 +1,2 @@
+DROP INDEX "tool_calls_run_provider_call_idx";--> statement-breakpoint
+CREATE UNIQUE INDEX "tool_calls_run_provider_call_idx" ON "tool_calls" USING btree ("agent_run_id","provider_call_id","idempotency_key");

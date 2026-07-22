@@ -4,7 +4,10 @@ import { db } from "@/db";
 import { learningItems, pages, workspaces } from "@/db/schema";
 import type { CreateAgentDocumentProposalInput } from "@/packages/document-proposals";
 import { learningItemRecommendationDraftSchema } from "../learning-item-contract";
-import { createToolRegistry } from "./tool-registry";
+import {
+  createToolRegistry,
+  type ToolDatabaseTransaction,
+} from "./tool-registry";
 
 export const READ_CURRENT_PAGE_TOOL = "read_current_page";
 export const SEARCH_LEARNING_MEMORY_TOOL = "search_learning_memory";
@@ -151,19 +154,20 @@ async function loadOwnedCurrentPage(userId: string, pageId: string) {
 }
 
 export function createInitialToolRegistry({
-  createDocumentProposal = async (input) => {
+  createDocumentProposal = async (input, transaction) => {
     const { createAgentDocumentProposal } =
       await import("@/packages/document-proposals");
-    return createAgentDocumentProposal(input);
+    return createAgentDocumentProposal(input, transaction);
   },
-  createLearningItemRecommendation = async (input) => {
+  createLearningItemRecommendation = async (input, transaction) => {
     const { createAgentLearningItemRecommendation } =
       await import("@/packages/agents/learning-items");
-    return createAgentLearningItemRecommendation(input);
+    return createAgentLearningItemRecommendation(input, transaction);
   },
 }: {
   createDocumentProposal?: (
-    input: CreateAgentDocumentProposalInput
+    input: CreateAgentDocumentProposalInput,
+    transaction?: ToolDatabaseTransaction
   ) => Promise<z.infer<typeof documentProposalOutput>>;
   createLearningItemRecommendation?: (
     input: z.infer<typeof learningItemRecommendationInput> & {
@@ -174,7 +178,8 @@ export function createInitialToolRegistry({
       providerToolCallId: string;
       toolCallIdempotencyKey: string;
       idempotencyScopeId: string;
-    }
+    },
+    transaction?: ToolDatabaseTransaction
   ) => Promise<z.infer<typeof learningItemRecommendationOutput>>;
 } = {}) {
   return createToolRegistry([
@@ -187,6 +192,7 @@ export function createInitialToolRegistry({
       ownership: "current_user",
       risk: "low",
       approval: "not_required",
+      execution: "read_only",
       audit: {
         mode: "redacted",
         input: () => ({}),
@@ -218,6 +224,7 @@ export function createInitialToolRegistry({
       ownership: "current_user",
       risk: "low",
       approval: "not_required",
+      execution: "read_only",
       audit: {
         mode: "redacted",
         input: (rawInput) => ({
@@ -275,25 +282,29 @@ export function createInitialToolRegistry({
       ownership: "current_user",
       risk: "medium",
       approval: "not_required",
+      execution: "database_transaction",
       authorize: async (context) =>
         Boolean(context.userId && context.currentPageId && context.provenance),
-      execute: async (context, rawInput) => {
+      execute: async (context, rawInput, transaction) => {
         const input = documentProposalInput.parse(rawInput);
         const provenance = context.provenance!;
-        return createDocumentProposal({
-          userId: context.userId,
-          pageId: context.currentPageId,
-          sourceRunId: provenance.sourceRunId,
-          agentRunId: provenance.agentRunId,
-          providerToolCallId: provenance.providerToolCallId,
-          toolCallIdempotencyKey: provenance.idempotencyKey,
-          idempotencyScopeId: provenance.idempotencyScopeId,
-          summary: input.summary,
-          operations: {
-            baseContentRevision: input.baseContentRevision,
-            operations: input.operations,
+        return createDocumentProposal(
+          {
+            userId: context.userId,
+            pageId: context.currentPageId,
+            sourceRunId: provenance.sourceRunId,
+            agentRunId: provenance.agentRunId,
+            providerToolCallId: provenance.providerToolCallId,
+            toolCallIdempotencyKey: provenance.idempotencyKey,
+            idempotencyScopeId: provenance.idempotencyScopeId,
+            summary: input.summary,
+            operations: {
+              baseContentRevision: input.baseContentRevision,
+              operations: input.operations,
+            },
           },
-        });
+          transaction
+        );
       },
     },
     {
@@ -305,6 +316,7 @@ export function createInitialToolRegistry({
       ownership: "current_user",
       risk: "medium",
       approval: "required_pending_result",
+      execution: "database_transaction",
       audit: {
         mode: "redacted",
         input: (rawInput) => {
@@ -322,19 +334,22 @@ export function createInitialToolRegistry({
       },
       authorize: async (context) =>
         Boolean(context.userId && context.currentPageId && context.provenance),
-      execute: async (context, rawInput) => {
+      execute: async (context, rawInput, transaction) => {
         const input = learningItemRecommendationInput.parse(rawInput);
         const provenance = context.provenance!;
-        return createLearningItemRecommendation({
-          userId: context.userId,
-          pageId: context.currentPageId,
-          sourceRunId: provenance.sourceRunId,
-          agentRunId: provenance.agentRunId,
-          providerToolCallId: provenance.providerToolCallId,
-          toolCallIdempotencyKey: provenance.idempotencyKey,
-          idempotencyScopeId: provenance.idempotencyScopeId,
-          ...input,
-        });
+        return createLearningItemRecommendation(
+          {
+            userId: context.userId,
+            pageId: context.currentPageId,
+            sourceRunId: provenance.sourceRunId,
+            agentRunId: provenance.agentRunId,
+            providerToolCallId: provenance.providerToolCallId,
+            toolCallIdempotencyKey: provenance.idempotencyKey,
+            idempotencyScopeId: provenance.idempotencyScopeId,
+            ...input,
+          },
+          transaction
+        );
       },
     },
   ]);
