@@ -27,3 +27,4 @@ export {
   verifySkillVersionIntegrity,
   type SkillVersionSnapshot,
 } from "./lib/skill-version-lifecycle";
+export { InMemorySkillSandboxRunner } from "./lib/in-memory-sandbox-runner";
