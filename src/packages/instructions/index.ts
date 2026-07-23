@@ -1,13 +1,7 @@
-export type PersonalInstructionsSnapshot = {
-  pageId: string;
-  contentRevision: number;
-  snapshot: string;
-};
-
-export function applyPersonalInstructions(
-  systemInstruction: string,
-  instructions: PersonalInstructionsSnapshot | null
-) {
-  if (!instructions) return systemInstruction;
-  return `${systemInstruction}\n\nPersonal Instructions:\n${instructions.snapshot}`;
-}
+export { applyPersonalInstructions } from "./lib/instructions-compiler-legacy";
+export {
+  InstructionsCompiler,
+  InstructionValidationError,
+  type PersonalInstructionsSnapshot,
+  type CompilerOptions,
+} from "./lib/instructions-compiler";
