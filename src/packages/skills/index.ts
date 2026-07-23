@@ -21,3 +21,9 @@ export {
   SkillSandboxExecutor,
   type ToolHandler,
 } from "./lib/skill-sandbox-executor";
+export {
+  computeSkillContentHash,
+  createSkillVersionSnapshot,
+  verifySkillVersionIntegrity,
+  type SkillVersionSnapshot,
+} from "./lib/skill-version-lifecycle";
