@@ -27,3 +27,8 @@ export {
   isDocumentProposalStale,
   type DocumentProposalSnapshot,
 } from "./lifecycle";
+export {
+  ProposalDecisionEngine,
+  ProposalInvalidStateError,
+  type ProposalAction,
+} from "./lib/proposal-decision-engine";
