@@ -79,7 +79,7 @@ describe("AgentScheduleList & ScheduledProposalInbox UI Components", () => {
       screen.getByText(/Đề xuất tóm tắt nội dung tuần qua/i)
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Xem đề xuất/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Mở và xem trước/i }));
     expect(onOpen).toHaveBeenCalledWith("page-1", "prop-1");
   });
 });

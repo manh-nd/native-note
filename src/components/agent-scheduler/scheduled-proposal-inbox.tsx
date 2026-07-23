@@ -72,7 +72,7 @@ export function ScheduledProposalInbox({
             <Card key={proposal.id} size="sm">
               <CardHeader>
                 <CardTitle>
-                  {proposal.pageTitle} · {proposal.agentName}
+                  {proposal.agentName} · {proposal.pageTitle}
                 </CardTitle>
                 <CardDescription>{proposal.summaryVi}</CardDescription>
                 <div className="flex items-center gap-2 pt-2">
@@ -91,9 +91,9 @@ export function ScheduledProposalInbox({
                     variant="outline"
                     className="ml-auto"
                     onClick={() => onOpenProposal(proposal.pageId, proposal.id)}
-                    aria-label={`Xem đề xuất ${proposal.pageTitle}`}
+                    aria-label="Mở và xem trước"
                   >
-                    Xem đề xuất
+                    Mở và xem trước
                   </Button>
                 </div>
               </CardHeader>
