@@ -5,3 +5,4 @@ export {
   type PersonalInstructionsSnapshot,
   type CompilerOptions,
 } from "./lib/instructions-compiler";
+export { InstructionPriorityResolver } from "./lib/instruction-priority-resolver";
