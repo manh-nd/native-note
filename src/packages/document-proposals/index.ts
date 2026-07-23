@@ -41,3 +41,4 @@ export {
   ReviewFindingAuditLog,
   type AuditLogEntry,
 } from "./lib/review-finding-audit-log";
+export { InMemoryProposalStore } from "./lib/in-memory-proposal-store";
