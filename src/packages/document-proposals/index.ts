@@ -32,3 +32,8 @@ export {
   ProposalInvalidStateError,
   type ProposalAction,
 } from "./lib/proposal-decision-engine";
+export {
+  ProposalConflictError,
+  ProposalDiffApplier,
+  type ApplyDiffResult,
+} from "./lib/proposal-diff-applier";
