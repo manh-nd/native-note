@@ -6,3 +6,7 @@ export {
   type CompilerOptions,
 } from "./lib/instructions-compiler";
 export { InstructionPriorityResolver } from "./lib/instruction-priority-resolver";
+export {
+  InstructionAuditTrail,
+  type AuditSnapshotEntry,
+} from "./lib/instruction-audit-trail";
