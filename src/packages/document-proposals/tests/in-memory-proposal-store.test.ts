@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  InMemoryProposalStore,
-  ProposalConflictError,
-  ProposalInvalidStateError,
-} from "../index";
+import { InMemoryProposalStore, ProposalInvalidStateError } from "../index";
 import type { PageDocumentProposal } from "../index";
 
 describe("Headless InMemory Proposal Store Seam & Package Assembly", () => {

@@ -50,6 +50,7 @@ export class ProposalDiffApplier {
         document: applied.content,
       };
     } catch (error) {
+      if (error instanceof ProposalConflictError) throw error;
       throw new ProposalConflictError(
         proposal.id,
         expectedRevision,
