@@ -16,3 +16,8 @@ export {
   type PublishedSkillPolicy,
 } from "./lib/skill-compiler";
 export { menuSkillsForScope, type MenuSkill } from "./lib/menu-skills";
+export {
+  SkillPermissionError,
+  SkillSandboxExecutor,
+  type ToolHandler,
+} from "./lib/skill-sandbox-executor";
