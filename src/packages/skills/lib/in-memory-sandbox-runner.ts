@@ -28,8 +28,8 @@ export class InMemorySkillSandboxRunner {
   async runSkillTool(
     skillId: string,
     toolName: string,
-    args: any
-  ): Promise<any> {
+    args: unknown
+  ): Promise<unknown> {
     const executor = this.executors.get(skillId);
     if (!executor) {
       throw new Error(

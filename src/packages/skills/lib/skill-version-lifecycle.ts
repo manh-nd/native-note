@@ -19,10 +19,18 @@ export function computeSkillContentHash(
   policy: PublishedSkillPolicy,
   compilerVersion: string
 ): string {
+  const sortedPolicy = {
+    allowedTools: [...policy.allowedTools].sort(),
+    approvalPolicy: policy.approvalPolicy,
+    inputScope: policy.inputScope,
+    outputMode: policy.outputMode,
+    showInEditorMenu: policy.showInEditorMenu,
+    status: policy.status,
+  };
   const payload = JSON.stringify({
-    instructionSnapshot,
-    policy,
     compilerVersion,
+    instructionSnapshot,
+    policy: sortedPolicy,
   });
   return createHash("sha256").update(payload).digest("hex");
 }

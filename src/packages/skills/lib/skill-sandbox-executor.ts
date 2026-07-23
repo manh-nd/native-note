@@ -9,7 +9,7 @@ export class SkillPermissionError extends Error {
   }
 }
 
-export type ToolHandler = (args: any) => Promise<any> | any;
+export type ToolHandler = (args: unknown) => Promise<unknown> | unknown;
 
 export class SkillSandboxExecutor {
   private readonly policy: PublishedSkillPolicy;
@@ -30,7 +30,7 @@ export class SkillSandboxExecutor {
     return this.policy.allowedTools.includes(toolName);
   }
 
-  async executeTool(toolName: string, args: any): Promise<any> {
+  async executeTool(toolName: string, args: unknown): Promise<unknown> {
     if (!this.isToolAllowed(toolName)) {
       throw new SkillPermissionError(toolName);
     }
