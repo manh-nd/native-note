@@ -37,3 +37,7 @@ export {
   ProposalDiffApplier,
   type ApplyDiffResult,
 } from "./lib/proposal-diff-applier";
+export {
+  ReviewFindingAuditLog,
+  type AuditLogEntry,
+} from "./lib/review-finding-audit-log";
