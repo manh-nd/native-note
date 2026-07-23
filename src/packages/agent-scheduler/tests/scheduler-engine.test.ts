@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentSchedulerEngine, isTransientError } from "../scheduler-engine";
+import { AgentSchedulerEngine, isTransientError } from "../index";
 import type { AgentScheduleRow } from "../types";
 
 describe("AgentSchedulerEngine & Exponential Backoff Retry", () => {

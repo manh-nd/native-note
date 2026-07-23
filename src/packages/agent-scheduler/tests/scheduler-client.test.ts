@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryAgentSchedulerClient } from "../in-memory-adapter";
+import { InMemoryAgentSchedulerClient } from "../index";
 
 describe("AgentSchedulerClient Seam & InMemory Adapter", () => {
   it("allows creating, listing, toggling, and deleting agent schedules", async () => {
