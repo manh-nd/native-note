@@ -10,3 +10,4 @@ export {
   InstructionAuditTrail,
   type AuditSnapshotEntry,
 } from "./lib/instruction-audit-trail";
+export { InMemoryInstructionStore } from "./lib/in-memory-instruction-store";
