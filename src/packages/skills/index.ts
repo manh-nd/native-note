@@ -9,6 +9,8 @@ export {
 export {
   compileSkillDraft,
   SkillCompilationError,
+  SkillValidationError,
+  validateSkillPolicy,
   SKILL_COMPILER_VERSION,
   type CompiledSkillDraft,
   type PublishedSkillPolicy,

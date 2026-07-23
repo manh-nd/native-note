@@ -19,6 +19,13 @@ export class SkillCompilationError extends Error {
   }
 }
 
+export class SkillValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SkillValidationError";
+  }
+}
+
 function unsupported(type: unknown): never {
   throw new SkillCompilationError(
     `Skill không hỗ trợ cấu trúc \"${String(type)}\".`
@@ -75,12 +82,12 @@ function assertSupportedPolicyValue(
   field: string
 ) {
   if (!supported.includes(value))
-    throw new SkillCompilationError(
-      `Skill không hỗ trợ ${field} \"${value}\".`
-    );
+    throw new SkillValidationError(`Skill không hỗ trợ ${field} \"${value}\".`);
 }
 
-function normalizePolicy(metadata: SkillMetadata): PublishedSkillPolicy {
+export function validateSkillPolicy(
+  metadata: SkillMetadata
+): PublishedSkillPolicy {
   assertSupportedPolicyValue(
     metadata.inputScope,
     ["selection", "block", "page"],
@@ -111,6 +118,10 @@ function normalizePolicy(metadata: SkillMetadata): PublishedSkillPolicy {
     approvalPolicy: metadata.approvalPolicy,
     showInEditorMenu: metadata.showInEditorMenu,
   };
+}
+
+function normalizePolicy(metadata: SkillMetadata): PublishedSkillPolicy {
+  return validateSkillPolicy(metadata);
 }
 
 export function compileSkillDraft({
