@@ -6,38 +6,42 @@ import type {
 
 export class HttpAgentSchedulerClient implements AgentSchedulerClient {
   async listSchedules(): Promise<AgentScheduleRow[]> {
-    const res = await fetch("/api/agents/schedules");
+    const res = await fetch("/api/agent-schedules");
     if (!res.ok) throw new Error("Failed to fetch agent schedules");
     const json = await res.json();
-    return json.data ?? [];
+    const list = json.schedules ?? json.data ?? [];
+    return list.map((item: any) => item.schedule ?? item);
   }
 
   async createSchedule(
     input: CreateAgentScheduleInput
   ): Promise<AgentScheduleRow> {
-    const res = await fetch("/api/agents/schedules", {
+    const res = await fetch("/api/agent-schedules", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        ...input,
+        enabled: input.active ?? true,
+      }),
     });
     if (!res.ok) throw new Error("Failed to create agent schedule");
     const json = await res.json();
-    return json.data;
+    return json.schedule ?? json.data;
   }
 
   async toggleSchedule(id: string, active: boolean): Promise<AgentScheduleRow> {
-    const res = await fetch(`/api/agents/schedules/${id}`, {
-      method: "PATCH",
+    const res = await fetch(`/api/agent-schedules/${id}`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active }),
+      body: JSON.stringify({ enabled: active, active }),
     });
     if (!res.ok) throw new Error("Failed to toggle agent schedule");
     const json = await res.json();
-    return json.data;
+    return json.schedule ?? json.data ?? { id, active };
   }
 
   async deleteSchedule(id: string): Promise<boolean> {
-    const res = await fetch(`/api/agents/schedules/${id}`, {
+    const res = await fetch(`/api/agent-schedules/${id}`, {
       method: "DELETE",
     });
     return res.ok;

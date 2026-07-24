@@ -5,6 +5,11 @@ import type { Editor } from "@tiptap/core";
 import { DecorationSet } from "@tiptap/pm/view";
 import type { DocumentOperationBatch } from "@/packages/document-editor";
 import {
+  createDocumentProposalEngine,
+  type DocumentProposalEngine,
+  type PageDocumentProposal,
+} from "@/packages/document-proposals";
+import {
   showDocumentProposalPreview,
   clearSelectionAiPreview,
 } from "./selection-ai";
@@ -19,32 +24,41 @@ export type PendingProposal = {
   operations: DocumentOperationBatch;
 };
 
+const defaultEngine = createDocumentProposalEngine();
+
 export function isProposalStale(
-  proposal: PendingProposal | null,
-  currentContentRevision: number
+  proposal: PendingProposal | PageDocumentProposal | null,
+  currentContentRevision: number,
+  engine: DocumentProposalEngine = defaultEngine
 ): boolean {
   if (!proposal) return false;
-  return proposal.baseContentRevision < currentContentRevision;
+  return engine.isStale(
+    proposal as PageDocumentProposal,
+    currentContentRevision
+  );
 }
 
 export function createProposalDecorationSet(
   proposal: PendingProposal | null,
-  currentContentRevision: number
+  currentContentRevision: number,
+  engine: DocumentProposalEngine = defaultEngine
 ): DecorationSet | null {
-  if (!proposal || isProposalStale(proposal, currentContentRevision)) {
+  if (!proposal || isProposalStale(proposal, currentContentRevision, engine)) {
     return null;
   }
   return null;
 }
 
-export function useProposalOrchestrator() {
+export function useProposalOrchestrator(
+  engine: DocumentProposalEngine = defaultEngine
+) {
   const [proposal, setProposal] = useState<PendingProposal | null>(null);
 
   const isStale = useCallback(
     (currentContentRevision: number) => {
-      return isProposalStale(proposal, currentContentRevision);
+      return isProposalStale(proposal, currentContentRevision, engine);
     },
-    [proposal]
+    [proposal, engine]
   );
 
   const showPreview = useCallback(
@@ -66,5 +80,6 @@ export function useProposalOrchestrator() {
     isStale,
     showPreview,
     clearPreview,
+    engine,
   };
 }

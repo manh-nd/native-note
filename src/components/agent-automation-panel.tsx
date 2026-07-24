@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarClock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -76,6 +76,8 @@ export function AgentAutomationPanel({
   >([]);
   const [dashboardOpen, setDashboardOpen] = useState(false);
 
+  const schedulerClient = useMemo(() => new HttpAgentSchedulerClient(), []);
+
   const refresh = useCallback(async () => {
     try {
       const [agentRes, scheduleRes, inboxRes, deliveryRes] = await Promise.all([
@@ -134,10 +136,7 @@ export function AgentAutomationPanel({
     enabled: boolean
   ) {
     try {
-      await requestJson(`/api/agent-schedules/${entry.schedule.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ ...entry.schedule, enabled }),
-      });
+      await schedulerClient.toggleSchedule(entry.schedule.id, enabled);
       await refresh();
     } catch (error) {
       toast.error(

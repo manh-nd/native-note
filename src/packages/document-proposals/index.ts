@@ -1,4 +1,9 @@
 export {
+  DocumentProposalEngine,
+  createDocumentProposalEngine,
+  type DocumentProposalEngineOptions,
+} from "./lib/document-proposal-engine";
+export {
   acceptDocumentProposal,
   applyReviewFindings,
   createAgentDocumentProposal,
