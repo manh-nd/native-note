@@ -10,7 +10,6 @@ import {
   ReviewFindingAuditLog,
   type AuditLogEntry,
 } from "./review-finding-audit-log";
-import { isDocumentProposalStale } from "../lifecycle";
 
 export type DocumentProposalEngineOptions = {
   store?: InMemoryProposalStore;
@@ -20,13 +19,13 @@ export type DocumentProposalEngineOptions = {
 };
 
 export class DocumentProposalEngine {
-  private store?: InMemoryProposalStore;
+  private store: InMemoryProposalStore;
   private auditLog: ReviewFindingAuditLog;
   private decisionEngine: ProposalDecisionEngine;
   private diffApplier: ProposalDiffApplier;
 
   constructor(options: DocumentProposalEngineOptions = {}) {
-    this.store = options.store;
+    this.store = options.store ?? new InMemoryProposalStore();
     this.auditLog = options.auditLog ?? new ReviewFindingAuditLog();
     this.decisionEngine =
       options.decisionEngine ?? new ProposalDecisionEngine();
@@ -44,7 +43,7 @@ export class DocumentProposalEngine {
     currentRevision: number;
     userId?: string;
   }): ApplyDiffResult & { proposal: PageDocumentProposal } {
-    const proposal = this.store?.getProposalById(proposalId);
+    const proposal = this.store.getProposalById(proposalId);
     if (!proposal) {
       throw new Error(`Đề xuất "${proposalId}" không tồn tại.`);
     }
@@ -63,9 +62,7 @@ export class DocumentProposalEngine {
     });
 
     // 3. Atomically persist updated proposal to store
-    if (this.store) {
-      this.store.saveProposal(nextProposal);
-    }
+    this.store.saveProposal(nextProposal);
 
     // 4. Record audit log entry
     this.auditLog.recordDecision({
@@ -90,7 +87,7 @@ export class DocumentProposalEngine {
     proposalId: string;
     userId?: string;
   }): PageDocumentProposal {
-    const proposal = this.store?.getProposalById(proposalId);
+    const proposal = this.store.getProposalById(proposalId);
     if (!proposal) {
       throw new Error(`Đề xuất "${proposalId}" không tồn tại.`);
     }
@@ -100,9 +97,7 @@ export class DocumentProposalEngine {
       "reject"
     );
 
-    if (this.store) {
-      this.store.saveProposal(nextProposal);
-    }
+    this.store.saveProposal(nextProposal);
 
     this.auditLog.recordDecision({
       findingId: proposal.id,

@@ -3,7 +3,10 @@
 import { useCallback, useState } from "react";
 import type { Editor } from "@tiptap/core";
 import { DecorationSet } from "@tiptap/pm/view";
-import type { DocumentOperationBatch } from "@/packages/document-editor";
+import type {
+  DocumentContent,
+  DocumentOperationBatch,
+} from "@/packages/document-editor";
 import {
   createDocumentProposalEngine,
   type DocumentProposalEngine,
@@ -74,12 +77,50 @@ export function useProposalOrchestrator(
     setProposal(null);
   }, []);
 
+  const acceptProposal = useCallback(
+    ({
+      document,
+      currentRevision,
+      userId,
+    }: {
+      document: DocumentContent;
+      currentRevision: number;
+      userId?: string;
+    }) => {
+      if (!proposal) return null;
+      const res = engine.acceptProposal({
+        proposalId: proposal.id,
+        document,
+        currentRevision,
+        userId,
+      });
+      setProposal(null);
+      return res;
+    },
+    [proposal, engine]
+  );
+
+  const rejectProposal = useCallback(
+    (userId?: string) => {
+      if (!proposal) return null;
+      const res = engine.rejectProposal({
+        proposalId: proposal.id,
+        userId,
+      });
+      setProposal(null);
+      return res;
+    },
+    [proposal, engine]
+  );
+
   return {
     proposal,
     setProposal,
     isStale,
     showPreview,
     clearPreview,
+    acceptProposal,
+    rejectProposal,
     engine,
   };
 }
